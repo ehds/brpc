@@ -56,11 +56,11 @@ jobs:
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
         brew install bison@2.7 flex boost libevent
-        export PATH="/usr/local/opt/bison@2.7/bin:$PATH
-        export PATH="/usr/local/opt/flex/bin:$PATH
+        export PATH="/usr/local/opt/bison@2.7/bin:$PATH"
+        export PATH="/usr/local/opt/flex/bin:$PATH"
     - name: Install Thrift
       run: |
-        export PATH="/usr/local/opt/bison@2.7/bin:$PATH
+        bison --version
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
         ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
