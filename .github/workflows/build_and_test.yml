@@ -55,7 +55,7 @@ jobs:
     - if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-        brew install bison flex boost libevent
+        brew install bison@2.7 flex boost libevent
         export PATH="/usr/local/opt/bison/bin:$PATH
         export PATH="/usr/local/opt/flex/bin:$PATH
     - if: ${{ matrix.all_options }}
@@ -63,7 +63,7 @@ jobs:
       run: |
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-        ./configure --prefix=/usr --with-rs=no --with-ruby=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
+        ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
         make -j4 && sudo make install
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel' && matrix.os=='ubuntu-latest' }}
