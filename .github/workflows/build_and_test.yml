@@ -55,13 +55,14 @@ jobs:
     - if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-        brew install bison@2.7 flex boost libevent
-        export PATH="/usr/local/opt/bison@2.7/bin:$PATH"
-        export PATH="/usr/local/opt/flex/bin:$PATH"
+        brew install bison@2.7 flex boost libeven
+        echo "/usr/local/opt/bison@2.7/bin" >> $GITHUB_PATH
+        echo "/usr/local/opt/flex/bin" >> $GITHUB_PATH
+        echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
     - name: Install Thrift
       run: |
-        export PATH="/usr/local/opt/bison@2.7/bin:$PATH"
-        bison --version
+        export LDFLAGS="-L/usr/local/opt/openssl@3/lib"
+        export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
         ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
@@ -72,7 +73,7 @@ jobs:
           curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
           chmod +x "bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
           ./bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh --user
-          export PATH=${HOME}/bin:$PATH
+          echo "$HOME/bin" >> $GITHUB_PATH
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
@@ -86,25 +87,21 @@ jobs:
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && !matrix.all_options}}
       run: |
-        export PATH=${HOME}/bin:$PATH
         bazel build -j 12 -c opt --copt -DHAVE_ZLIB=1 //...
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && matrix.all_options}}
       run: |
-        export PATH=${HOME}/bin:$PATH
         bazel build -j 12 -c opt --define with_mesalink=false --define with_glog=true --define with_thrift=true --copt -DHAVE_ZLIB=1 //...
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && !matrix.all_options}}
       run: |
        sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC
        make -j4
-       sh tools/make_all_examples
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
       run: |
        sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC  --with-thrift --with-glog
        make -j4
-       sh tools/make_all_examples
 
     - name: Run Tests
       if: ${{ matrix.purpose == 'test' }}
