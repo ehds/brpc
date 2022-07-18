@@ -55,14 +55,13 @@ jobs:
     - if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-        brew install bison@2.7 flex boost libevent
+        brew install bison@2.7 flex boost libevent thrift
         echo "/usr/local/opt/bison@2.7/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/flex/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
     - name: Install Thrift
+      if: ${{ runner.os == 'Linux' }}
       run: |
-        export LDFLAGS="-L/usr/local/opt/openssl@3/lib"
-        export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
         ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
@@ -110,6 +109,7 @@ jobs:
       id: test-brpc
       working-directory: ${{ github.workspace }}/test
       run: |
+        make -j4
         ulimit -c unlimited -S
         sudo bash -c "echo 'core.%e.%p' > /proc/sys/kernel/core_pattern"
         sh ./run_tests.sh
