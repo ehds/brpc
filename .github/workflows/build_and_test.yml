@@ -38,6 +38,10 @@ jobs:
         - compiler: gcc
           CC: gcc
           CXX: g++
+        - os: ubuntu-latest
+          PREFIX: /usr
+        - os: macos-latest
+          PREFIX: /opt/homebrew
           
     env:
       CMAKE_BUILD_DIR: ${{ github.workspace }}/bld
@@ -62,11 +66,12 @@ jobs:
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
         echo "/usr/local/opt/gnu-getopt/bin"  >> $GITHUB_PATH
     - name: Install Thrift
-      if: ${{ runner.os == 'Linux' }}
       run: |
+        export LDFLAGS="-L/usr/local/opt/openssl@3/lib"
+        export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-        ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
+        ./configure --prefix=$PREFIX --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no --with-c_glib=no --with-dotnetcore=no CXXFLAGS="-Wno-unused-variable"
         make -j4 && sudo make install
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel'}}
@@ -96,14 +101,14 @@ jobs:
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && !matrix.all_options}}
       run: |
-       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift
+       sh config_brpc.sh --headers=$PREFIX/include --libs=$PREFIX/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift
        make -j4
        sh tools/make_all_examples
 
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
       run: |
-       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift --with-glog
+       sh config_brpc.sh --headers=$PREFIX/include --libs=$PREFIX/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift --with-glog
        ls -l src
        make -j4
 
