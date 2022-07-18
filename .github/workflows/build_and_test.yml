@@ -58,9 +58,9 @@ jobs:
         brew install bison@2.7 flex boost libevent
         export PATH="/usr/local/opt/bison@2.7/bin:$PATH
         export PATH="/usr/local/opt/flex/bin:$PATH
-    - if: ${{ matrix.all_options }}
-      name: Install Thrift
+    - name: Install Thrift
       run: |
+        export PATH="/usr/local/opt/bison@2.7/bin:$PATH
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
         ./configure --prefix=/usr --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
@@ -70,9 +70,8 @@ jobs:
       run: |
           curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
           chmod +x "bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
-          ./bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh --user
+          ./bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh --user
           export PATH=${HOME}/bin:$PATH
-
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
