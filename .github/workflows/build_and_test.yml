@@ -60,6 +60,7 @@ jobs:
         export PATH="/usr/local/opt/flex/bin:$PATH"
     - name: Install Thrift
       run: |
+        export PATH="/usr/local/opt/bison@2.7/bin:$PATH"
         bison --version
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
@@ -85,11 +86,13 @@ jobs:
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && !matrix.all_options}}
       run: |
+        export PATH=${HOME}/bin:$PATH
         bazel build -j 12 -c opt --copt -DHAVE_ZLIB=1 //...
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && matrix.all_options}}
       run: |
-         bazel build -j 12 -c opt --define with_mesalink=false --define with_glog=true --define with_thrift=true --copt -DHAVE_ZLIB=1 //...
+        export PATH=${HOME}/bin:$PATH
+        bazel build -j 12 -c opt --define with_mesalink=false --define with_glog=true --define with_thrift=true --copt -DHAVE_ZLIB=1 //...
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && !matrix.all_options}}
       run: |
