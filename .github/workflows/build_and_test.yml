@@ -55,7 +55,7 @@ jobs:
     - if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-        brew install bison@2.7 flex boost libeven
+        brew install bison@2.7 flex boost libevent
         echo "/usr/local/opt/bison@2.7/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/flex/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
@@ -95,12 +95,14 @@ jobs:
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && !matrix.all_options}}
       run: |
-       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC
+       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift
        make -j4
+       sh tools/make_all_examples
+
     - name: Build BRPC with make
       if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
       run: |
-       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC  --with-thrift --with-glog
+       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift --with-glog
        make -j4
 
     - name: Run Tests
