@@ -82,12 +82,12 @@ jobs:
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}"
-        make -j4
+        make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && matrix.all_options}}
       run: |
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON
-        make -j4
+        make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && !matrix.all_options}}
       run: |
