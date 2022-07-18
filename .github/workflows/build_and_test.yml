@@ -1,0 +1,120 @@
+name: ci
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name:  >-
+      CI
+      ${{ matrix.os }}
+      ${{ matrix.compiler }}
+      ${{ matrix.build_tool }}
+      ${{ matrix.all_options }}
+      ${{ matrix.purpose }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang, gcc]
+        os: [ubuntu-latest, macos-latest]
+        build_tool: [cmake, bazel, make]
+        all_options: [true, false]
+        purpose: [build, test]
+        exclude:
+          - all_options: true
+            purpose: test
+          - build_tool: bazel
+            purpose: test
+          - build_tool: cmake
+            purpose: test
+        include:
+        - compiler: clang
+          CC: clang
+          CXX: clang++
+        - compiler: gcc
+          CC: gcc
+          CXX: g++
+    env:
+      CMAKE_BUILD_DIR: ${{ github.workspace }}/bld
+      CC: ${{ matrix.CC }}
+      CXX: ${{ matrix.CXX }}
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: true
+
+    - name: Install dependencies
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo apt-get install -qq realpath libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libleveldb-dev libgoogle-perftools-dev libboost-dev libssl-dev libevent-dev libboost-test-dev libgoogle-glog-dev
+        sudo apt-get install libgtest-dev && cd /usr/src/gtest && sudo env "PATH=$PATH" cmake . && sudo make && sudo mv libgtest* /usr/lib/ && cd -
+        sudo apt-get install -y gdb
+        sudo apt-get install automake bison flex g++ git libboost-all-dev libevent-dev libssl-dev libtool make pkg-config # thrift dependencies
+    - name: Install dependencies
+      if: ${{ runner.os == 'macOS' }}
+      run: |
+        brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
+    - name: Install bazel
+      if: ${{ matrix.build_tool == 'bazel' && matrix.os=='ubuntu-latest' }}
+      run: |
+        wget --no-clobber https://github.com/bazelbuild/bazel/releases/download/0.25.1/bazel_0.25.1-linux-x86_64.deb && sudo dpkg -i bazel_0.25.1-linux-x86_64.deb
+        sudo dpkg -i bazel_0.25.1-linux-x86_64.deb
+    - name: Install bazel
+      if: ${{ matrix.build_tool == 'bazel' && matrix.os=='macos-latest' }}
+      run: |
+        curl -fLO "https://github.com/bazelbuild/bazel/releases/download/0.25.1/bazel-0.25.1-installer-darwin-x86_64.sh"
+        chmod +x "bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
+        ./bazel-0.25.1-installer-darwin-x86_64.sh --user
+    - name: Install thrift
+      run: |
+        curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
+        tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/ && cd thrift-0.11.0/
+        ./configure --prefix=/usr --with-rs=no --with-ruby=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
+        make -j4 && make install
+
+    - name: Build BRPC with cmake
+      if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
+      run: |
+        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}"
+        make -j4
+    - name: Build BRPC with cmake
+      if: ${{ matrix.build_tool == 'cmake' && matrix.all_options}}
+      run: |
+        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON
+        make -j4
+    - name: Build BRPC with bazel
+      if: ${{ matrix.build_tool == 'bazel'  && !matrix.all_options}}
+      run: |
+        bazel build -j 12 -c opt --copt -DHAVE_ZLIB=1 //...
+    - name: Build BRPC with bazel
+      if: ${{ matrix.build_tool == 'bazel'  && matrix.all_options}}
+      run: |
+         bazel build -j 12 -c opt --define with_mesalink=false --define with_glog=true --define with_thrift=true --copt -DHAVE_ZLIB=1 //...
+    - name: Build BRPC with make
+      if: ${{ matrix.build_tool == 'make'  && !matrix.all_options}}
+      run: |
+       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC  "--with-thrift"
+       make -j4
+       sh tools/make_all_examples
+    - name: Build BRPC with make
+      if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
+      run: |
+       sh config_brpc.sh --headers=/usr/include --libs=/usr/lib --nodebugsymbols --cxx=$CXX --cc=$CC  --with-thrift --with-glog
+       make -j4
+       sh tools/make_all_examples
+
+    - name: Run Tests
+      if: ${{ matrix.purpose == 'test' }}
+      id: test-brpc
+      working-directory: ${{ github.workspace }}/test
+      run: |
+        ulimit -c unlimited -S
+        sudo bash -c "echo 'core.%e.%p' > /proc/sys/kernel/core_pattern"
+        sh ./run_tests.sh
+    - name: Collect failure info
+      if: ${{ steps.test-brpc.conclusion == 'failure'}}
+      run: |
+        COREFILE=$(find . -maxdepth 1 -name "core*" | head -n 1)
+        gdb -c "$COREFILE" test -ex "thread apply all bt" -ex "set pagination 0" -batch
