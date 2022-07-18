@@ -46,37 +46,37 @@ jobs:
     - uses: actions/checkout@v2
       with:
         submodules: true
-
-    - name: Install dependencies
-      - if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo apt-get install libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libleveldb-dev libgoogle-perftools-dev libboost-dev libssl-dev libevent-dev libboost-test-dev libgoogle-glog-dev
-          sudo apt-get install libgtest-dev && cd /usr/src/gtest && sudo env "PATH=$PATH" cmake . && sudo make && sudo mv libgtest* /usr/lib/ && cd -
-          sudo apt-get install -y gdb
-          sudo apt-get install automake bison flex g++ git libboost-all-dev libevent-dev libssl-dev libtool make pkg-config # thrift dependencies
-      - if: ${{ runner.os == 'macOS' }}
-        run: |
-          brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-          brew install bison flex boost libevent
-          export PATH="/usr/local/opt/bison/bin:$PATH
-          export PATH="/usr/local/opt/flex/bin:$PATH
-      - if: ${{ matrix.all_options }}
-        run: |
-          curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
-          tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-          ./configure --prefix=/usr --with-rs=no --with-ruby=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
-          make -j4 && sudo make install
+    - if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo apt-get install libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libleveldb-dev libgoogle-perftools-dev libboost-dev libssl-dev libevent-dev libboost-test-dev libgoogle-glog-dev
+        sudo apt-get install libgtest-dev && cd /usr/src/gtest && sudo env "PATH=$PATH" cmake . && sudo make && sudo mv libgtest* /usr/lib/ && cd -
+        sudo apt-get install -y gdb
+        sudo apt-get install automake bison flex g++ git libboost-all-dev libevent-dev libssl-dev libtool make pkg-config # thrift dependencies
+    - if: ${{ runner.os == 'macOS' }}
+      run: |
+        brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
+        brew install bison flex boost libevent
+        export PATH="/usr/local/opt/bison/bin:$PATH
+        export PATH="/usr/local/opt/flex/bin:$PATH
+    - if: ${{ matrix.all_options }}
+      name: Install Thrift
+      run: |
+        curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
+        tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
+        ./configure --prefix=/usr --with-rs=no --with-ruby=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no CXXFLAGS="-Wno-unused-variable"
+        make -j4 && sudo make install
     - name: Install bazel
-      - if: ${{ matrix.build_tool == 'bazel' && matrix.os=='ubuntu-latest' }}
-        run: |
+      if: ${{ matrix.build_tool == 'bazel' && matrix.os=='ubuntu-latest' }}
+      run: |
           sudo apt install python
           wget --no-clobber https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel_${BAZEL_VERSION}-linux-x86_64.deb && sudo dpkg -i bazel_${BAZEL_VERSION}-linux-x86_64.deb
           sudo dpkg -i bazel_${BAZEL_VERSION}-linux-x86_64.deb
-      - if: ${{ matrix.build_tool == 'bazel' && matrix.os=='macos-latest' }}
-        run: |
-          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
-          chmod +x "bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
-          ./bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh --user
+    - name: Install bazel
+      if: ${{ matrix.build_tool == 'bazel' && matrix.os=='macos-latest' }}
+      run: |
+        curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
+        chmod +x "bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
+        ./bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh --user
 
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
