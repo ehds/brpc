@@ -58,10 +58,11 @@ jobs:
       if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest
-        brew install biso flex boost libevent
+        brew install bison flex boost libevent
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel' && matrix.os=='ubuntu-latest' }}
       run: |
+        sudo apt install python
         wget --no-clobber https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel_${BAZEL_VERSION}-linux-x86_64.deb && sudo dpkg -i bazel_${BAZEL_VERSION}-linux-x86_64.deb
         sudo dpkg -i bazel_${BAZEL_VERSION}-linux-x86_64.deb
     - name: Install bazel
