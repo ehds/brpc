@@ -40,7 +40,7 @@ jobs:
           CXX: g++
         - os: ubuntu-latest
           PREFIX: /usr
-        - os: macos-latest
+        - os: macos-12
           PREFIX: /opt/homebrew
           
     env:
@@ -111,8 +111,7 @@ jobs:
       if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
       run: |
        sh config_brpc.sh --headers=$PREFIX/include --libs=$PREFIX/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift --with-glog
-       ls -l src
-       make -j4
+       make
 
     - name: Run Tests
       if: ${{ matrix.purpose == 'test' }}
