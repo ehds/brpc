@@ -41,7 +41,7 @@ jobs:
         - os: ubuntu-latest
           PREFIX: /usr
         - os: macos-12
-          PREFIX: /opt/homebrew
+          PREFIX: /usr/local/
           
     env:
       CMAKE_BUILD_DIR: ${{ github.workspace }}/bld

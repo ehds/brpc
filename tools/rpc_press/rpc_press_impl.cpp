@@ -15,23 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <stdio.h>
+#include "rpc_press_impl.h"
+#include "json_loader.h"
+#include <algorithm>
+#include <brpc/channel.h>
+#include <brpc/controller.h>
+#include <bthread/bthread.h>
+#include <butil/file_util.h> // butil::FilePath
+#include <butil/logging.h>
+#include <butil/time.h>
+#include <fcntl.h>
+#include <json2pb/pb_to_json.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <bthread/bthread.h>
-#include <butil/file_util.h>                     // butil::FilePath
-#include <butil/time.h>
-#include <brpc/channel.h>
-#include <brpc/controller.h>
-#include <butil/logging.h>
-#include <json2pb/pb_to_json.h>
-#include "json_loader.h"
-#include "rpc_press_impl.h"
-
 using google::protobuf::Message;
 using google::protobuf::Closure;
 
@@ -236,7 +236,7 @@ void RpcPress::sync_client() {
             Message*, 
             Message*, int64_t>
             (this, &RpcPress::handle_response, cntl, request, response, start_time);
-        const brpc::CallId cid1 = cntl->call_id();
+        const brpc::Callrpc_press_impl.cppId cid1 = cntl->call_id();
         _pbrpc_client->call_method(cntl, request, response, done);
         _sent_count << 1;
 
