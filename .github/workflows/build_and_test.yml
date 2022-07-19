@@ -61,7 +61,8 @@ jobs:
     - if: ${{ runner.os == 'macOS' }}
       run: |
         brew install openssl git gnu-getopt coreutils gflags protobuf leveldb googletest glog gperftools
-        brew install bison@2.7 flex boost libevent thrift
+        brew install bison@2.7 flex boost libevent
+        sudo ln -s /opt/homebrew/Cellar/openssl@3/3.0.3 /usr/local/opt/openssl
         echo "/usr/local/opt/bison@2.7/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/flex/bin" >> $GITHUB_PATH
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
@@ -72,7 +73,7 @@ jobs:
         export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-        mkdir bld && cd bld && cmake .. -DBUILD_C_GLIB=OFF -DBUILD_JAVA=OFF -DBUILD_PYTHON=OFF -DBUILD_HASKELL=OFF -DCMAKE_CXX_FLAGS="-Wno-implicit-function-declaration -Wno-unused-variable" && make -j5
+        mkdir bld && cd bld && cmake .. -DCMAKE_INSTALL_PREFIX=$PREFIX CMAKE_INSTALL_PREFIX-DBUILD_C_GLIB=OFF -DBUILD_JAVA=OFF -DBUILD_PYTHON=OFF -DBUILD_HASKELL=OFF -DCMAKE_CXX_FLAGS="-Wno-implicit-function-declaration -Wno-unused-variable" -DINCLUDE_DIRECTORIES="usr/local/opt/openssl@3/include" && make -j5
         sudo make install
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel'}}
