@@ -47,6 +47,7 @@ jobs:
       CMAKE_BUILD_DIR: ${{ github.workspace }}/bld
       CC: ${{ matrix.CC }}
       CXX: ${{ matrix.CXX }}
+      PREFIX: ${{ matrix.PREFIX }}
     steps:
     - uses: actions/checkout@v2
       with:
@@ -71,11 +72,12 @@ jobs:
         export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-        ./configure --prefix=$PREFIX --with-rs=no --with-ruby=no -with-haskell=no --with-python=no --with-java=no --with-go=no --with-perl=no --with-php=no --with-csharp=no --with-erlang=no --with-lua=no --with-nodejs=no --with-c_glib=no --with-dotnetcore=no CXXFLAGS="-Wno-unused-variable"
-        make -j4 && sudo make install
+        mkdir bld && cd bld && cmake .. && make -j5
+        sudo make install
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel'}}
       run: |
+          pwd
           curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
           chmod +x "bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh"
           ./bazel-${BAZEL_VERSION}-installer-`uname`-x86_64.sh --user
