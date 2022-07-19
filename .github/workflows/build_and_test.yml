@@ -76,6 +76,7 @@ jobs:
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
         mkdir bld && cd bld && cmake .. -DCMAKE_INSTALL_PREFIX=$PREFIX -DBUILD_TESTING=OFF -DBUILD_C_GLIB=OFF -DBUILD_JAVA=OFF -DBUILD_PYTHON=OFF -DBUILD_HASKELL=OFF -DCMAKE_CXX_FLAGS="-Wno-implicit-function-declaration -Wno-unused-variable" -DCMAKE_C_FLAGS="-Wno-implicit-function-declaration" -DINCLUDE_DIRECTORIES="usr/local/opt/openssl@3/include" && make -j5
         sudo make install
+        sudo make install DESTDIR=/usr/local
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel'}}
       run: |
