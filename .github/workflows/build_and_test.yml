@@ -72,7 +72,7 @@ jobs:
         export CPPFLAGS="-I/usr/local/opt/openssl@3/include"
         curl -fLO https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz
         tar -xf thrift-0.11.0.tar.gz && cd thrift-0.11.0/
-        mkdir bld && cd bld && cmake .. && make -j5
+        mkdir bld && cd bld && cmake .. -DBUILD_C_GLIB=OFF -DBUILD_JAVA=OFF -DBUILD_PYTHON=OFF -DBUILD_HASKELL=OFF -DCMAKE_CXX_FLAGS="-Wno-implicit-function-declaration -Wno-unused-variable" && make -j5
         sudo make install
     - name: Install bazel
       if: ${{ matrix.build_tool == 'bazel'}}
