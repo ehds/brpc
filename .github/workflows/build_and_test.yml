@@ -19,8 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [clang]
-        os: [macos-latest]
+        compiler: [clang, gcc]
+        os: [ubuntu-latest, macos-latest]
         build_tool: [cmake, bazel, make]
         all_options: [true, false]
         purpose: [build, test]
