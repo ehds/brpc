@@ -61,6 +61,9 @@ jobs:
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
         echo "/usr/local/opt/gnu-getopt/bin"  >> $GITHUB_PATH
         sudo ln -s /usr/local/opt/openssl@3/ /usr/local/opt/openssl/
+        echo 'export LIBRARY_PATH="/usr/local/opt/lib:/opt/homebrew/lib/:/usr/local/opt/openssl/lib:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
+        echo 'export CPATH="/usr/local/opt/include:/opt/homebrew/include/:/usr/local/opt/openssl/include:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
+
     - name: Install Thrift
       run: |
         export OPENSSL_ROOT_DIR="/usr/local/opt/openssl@3/"
@@ -107,7 +110,7 @@ jobs:
       if: ${{ matrix.build_tool == 'make'  && matrix.all_options}}
       run: |
        sh config_brpc.sh --headers=$PREFIX/include --libs=$PREFIX/lib --nodebugsymbols --cxx=$CXX --cc=$CC --with-thrift --with-glog
-       make
+       make -j4
 
     - name: Run Tests
       if: ${{ matrix.purpose == 'test' }}
