@@ -85,11 +85,13 @@ jobs:
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
+        export LDFLAGS="-L/usr/local/lib/"
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && matrix.all_options}}
       run: |
+        export LDFLAGS="-L/usr/local/lib/"
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with bazel
