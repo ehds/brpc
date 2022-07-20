@@ -61,8 +61,8 @@ jobs:
         echo "/usr/local/opt/openssl@3/bin"  >> $GITHUB_PATH
         echo "/usr/local/opt/gnu-getopt/bin"  >> $GITHUB_PATH
         sudo ln -s /usr/local/opt/openssl@3/ /usr/local/opt/openssl/
-        echo 'export LIBRARY_PATH="/usr/local/opt/lib:/opt/homebrew/lib/:/usr/local/opt/openssl/lib:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
-        echo 'export CPATH="/usr/local/opt/include:/opt/homebrew/include/:/usr/local/opt/openssl/include:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
+        echo 'export LIBRARY_PATH="/usr/local/lib/:/usr/local/opt/lib:/opt/homebrew/lib/:/usr/local/opt/openssl/lib:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
+        echo 'export CPATH="usr/local/include/:/usr/local/opt/include:/opt/homebrew/include/:/usr/local/opt/openssl/include:$LIBRARY_PATH"'  >> /Users/runner/.bash_profile
 
     - name: Install Thrift
       run: |
@@ -82,12 +82,13 @@ jobs:
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
-        export LDFLAGS="-L/usr/local/lib/ -L/usr/local/opt/openssl/lib/"
+        source /Users/runner/.bash_profile
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && matrix.all_options}}
       run: |
+        source /Users/runner/.bash_profile
         export LDFLAGS="-L/usr/local/lib/"
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
