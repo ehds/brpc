@@ -83,6 +83,7 @@ jobs:
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
         source /Users/runner/.bash_profile
+        echo $LIBRARY_PATH
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
