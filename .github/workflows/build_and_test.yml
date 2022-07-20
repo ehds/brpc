@@ -15,7 +15,7 @@ jobs:
       ${{ matrix.build_tool }}
       all_options:${{ matrix.all_options }}
       ${{ matrix.purpose }}
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-12
     strategy:
       fail-fast: false
       matrix:
@@ -38,10 +38,6 @@ jobs:
         - compiler: gcc
           CC: gcc
           CXX: g++
-        - os: ubuntu-latest
-          PREFIX: /usr
-        - os: macos-12
-          PREFIX: /usr/local/
           
     env:
       CMAKE_BUILD_DIR: ${{ github.workspace }}/bld

@@ -38,7 +38,7 @@ set(BRPC_VERSION 1.2.0)
 SET(CPACK_GENERATOR "DEB")
 SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "brpc authors")
 INCLUDE(CPack)
-
+link_directories("/usr/local/opt/lib" "/opt/homebrew/lib" "/usr/local/opt/openssl@3/lib")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # require at least gcc 4.8
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.8)
