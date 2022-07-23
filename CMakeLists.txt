@@ -445,6 +445,7 @@ set(SOURCES
     ${MCPACK2PB_SOURCES}
     ${BRPC_SOURCES}
     ${THRIFT_SOURCES}
+    ${PROTO_SRCS}
     )
 
 add_subdirectory(src)
