@@ -38,6 +38,7 @@ set(BRPC_VERSION 1.2.0)
 SET(CPACK_GENERATOR "DEB")
 SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "brpc authors")
 INCLUDE(CPack)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # require at least gcc 4.8
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.8)
@@ -438,6 +439,8 @@ compile_proto(PROTO_HDRS PROTO_SRCS ${PROJECT_BINARY_DIR}
                                     ${PROJECT_BINARY_DIR}/output/include
                                     ${PROJECT_SOURCE_DIR}/src
                                     "${PROTO_FILES}")
+add_library(PROTO_LIB OBJECT ${PROTO_SRCS} ${PROTO_HDRS})
+
 set(SOURCES
     ${BVAR_SOURCES}
     ${BTHREAD_SOURCES}
@@ -445,7 +448,6 @@ set(SOURCES
     ${MCPACK2PB_SOURCES}
     ${BRPC_SOURCES}
     ${THRIFT_SOURCES}
-    ${PROTO_SRCS}
     )
 
 add_subdirectory(src)
