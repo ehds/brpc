@@ -438,8 +438,6 @@ compile_proto(PROTO_HDRS PROTO_SRCS ${PROJECT_BINARY_DIR}
                                     ${PROJECT_BINARY_DIR}/output/include
                                     ${PROJECT_SOURCE_DIR}/src
                                     "${PROTO_FILES}")
-add_library(PROTO_LIB OBJECT ${PROTO_SRCS} ${PROTO_HDRS})
-
 set(SOURCES
     ${BVAR_SOURCES}
     ${BTHREAD_SOURCES}

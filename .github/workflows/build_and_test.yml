@@ -84,14 +84,14 @@ jobs:
       run: |
         source /Users/runner/.bash_profile
         echo $LIBRARY_PATH
-        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib
+        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib -DCMAKE_CXX_FLAGS="-L/opt/homebrew/lib -L${PREFIX}/lib"
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && matrix.all_options}}
       run: |
         source /Users/runner/.bash_profile
         export LDFLAGS="-L/usr/local/lib/"
-        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON
+        cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib -DWITH_MESALINK=OFF -DWITH_GLOG=ON -DWITH_THRIFT=ON -DCMAKE_CXX_FLAGS="-L/opt/homebrew/lib -L${PREFIX}/lib"
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with bazel
       if: ${{ matrix.build_tool == 'bazel'  && !matrix.all_options}}

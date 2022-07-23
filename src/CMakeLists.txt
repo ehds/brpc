@@ -25,7 +25,7 @@ include_directories(${PROJECT_SOURCE_DIR}/src)
 
 add_library(BUTIL_LIB OBJECT ${BUTIL_SOURCES})
 add_library(SOURCES_LIB OBJECT ${SOURCES})
-add_dependencies(SOURCES_LIB PROTO_LIB)
+add_library(PROTO_LIB OBJECT ${PROTO_SRCS})
 
 # shared library needs POSITION_INDEPENDENT_CODE
 set_property(TARGET ${SOURCES_LIB} PROPERTY POSITION_INDEPENDENT_CODE 1)
