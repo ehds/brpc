@@ -85,7 +85,7 @@ jobs:
     - name: Build BRPC with cmake
       if: ${{ matrix.build_tool == 'cmake' && !matrix.all_options}}
       run: |
-        export LDFLAGS="-L/usr/local/lib/"
+        export LDFLAGS="-L/usr/local/lib/ -L/usr/local/opt/openssl/lib/"
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}" -DCMAKE_LIBRARY_PATH=$PREFIX/lib
         make -j4 -C ${{ env.CMAKE_BUILD_DIR }}
     - name: Build BRPC with cmake
