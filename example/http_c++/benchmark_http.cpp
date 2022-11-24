@@ -35,6 +35,7 @@ DEFINE_int32(max_retry, 3, "Max retries(not including the first RPC)");
 DEFINE_bool(dont_fail, false, "Print fatal when some call failed");
 DEFINE_int32(dummy_port, -1, "Launch dummy server at this port");
 DEFINE_string(protocol, "http", "Client-side protocol");
+DEFINE_int32(sleep, 100, "RPC timeout in milliseconds");
 
 bvar::LatencyRecorder g_latency_recorder("client");
 
@@ -68,6 +69,7 @@ static void* sender(void* arg) {
             // server rather than sleeping.
             bthread_usleep(100000);
         }
+        usleep(FLAGS_sleep);
     }
     return NULL;
 }

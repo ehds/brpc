@@ -21,6 +21,7 @@
 
 #include "brpc/socket_id.h"           // SocketId
 #include "brpc/destroyable.h"         // DestroyingPtr
+#include <thread>
 
 
 namespace brpc {
@@ -47,6 +48,7 @@ public:
     // [Internal]
     int64_t received_us() const { return _received_us; }
     int64_t base_real_us() const { return _base_real_us; }
+    std::thread::id thread_id() const { return _thread_id; }
 
 protected:
     virtual ~InputMessageBase();
@@ -60,6 +62,7 @@ friend class Stream;
     SocketUniquePtr _socket;
     void (*_process)(InputMessageBase* msg);
     const void* _arg;
+   std::thread::id  _thread_id;
 };
 
 } // namespace brpc

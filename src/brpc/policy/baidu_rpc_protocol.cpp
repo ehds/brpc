@@ -38,6 +38,7 @@
 #include "brpc/details/usercode_backup_pool.h"
 #include "brpc/details/controller_private_accessor.h"
 #include "brpc/details/server_private_accessor.h"
+#include <thread>
 
 extern "C" {
 void bthread_assign_data(void* data);
@@ -391,6 +392,7 @@ void ProcessRpcRequest(InputMessageBase* msg_base) {
         span->set_received_us(msg->received_us());
         span->set_start_parse_us(start_parse_us);
         span->set_request_size(msg->payload.size() + msg->meta.size() + 12);
+        span->Annotate("Create request %d", msg->thread_id());
     }
 
     MethodStatus* method_status = NULL;
@@ -506,6 +508,8 @@ void ProcessRpcRequest(InputMessageBase* msg_base) {
 
         if (span) {
             span->set_start_callback_us(butil::cpuwide_time_us());
+            span->Annotate("Process request %d", std::this_thread::get_id());
+
             span->AsParent();
         }
         if (!FLAGS_usercode_in_pthread) {

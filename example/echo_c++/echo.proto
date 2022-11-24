@@ -28,6 +28,10 @@ message EchoResponse {
       required string message = 1;
 };
 
+message HttpRequest {};
+message HttpResponse {};
+
 service EchoService {
       rpc Echo(EchoRequest) returns (EchoResponse);
+      rpc HttpEcho(HttpRequest) returns (HttpResponse);
 };

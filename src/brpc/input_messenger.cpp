@@ -17,6 +17,7 @@
 
 
 #include <gflags/gflags.h>
+#include <thread>
 #include "butil/fd_guard.h"                      // fd_guard
 #include "butil/logging.h"                       // CHECK
 #include "butil/time.h"                          // cpuwide_time_us
@@ -264,6 +265,7 @@ int InputMessenger::ProcessNewMessage(
         }
         pr.message()->_received_us = received_us;
         pr.message()->_base_real_us = base_realtime;
+        pr.message()->_thread_id = std::this_thread::get_id();
                     
         // This unique_ptr prevents msg to be lost before transfering
         // ownership to last_msg
