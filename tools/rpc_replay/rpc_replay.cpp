@@ -45,6 +45,7 @@ DEFINE_int32(timeout_ms, 100, "RPC timeout in milliseconds");
 DEFINE_int32(max_retry, 3, "Maximum retry times");
 DEFINE_int32(dummy_port, 8899, "Port of dummy server(to monitor replaying)");
 DEFINE_string(http_host, "", "Host field for http protocol");
+DEFINE_string(service_name, "", "Service name to replay");
 
 bvar::LatencyRecorder g_latency_recorder("rpc_replay");
 bvar::Adder<int64_t> g_error_count("rpc_replay_error_count");
@@ -150,6 +151,10 @@ static void* replay_thread(void* arg) {
         for (brpc::SampledRequest* sample = it.Next();
              !brpc::IsAskedToQuit() && sample != NULL; sample = it.Next(), ++j) {
             std::unique_ptr<brpc::SampledRequest> sample_guard(sample);
+            if (!FLAGS_service_name.empty() && sample->meta.has_service_name() &&
+                sample->meta.service_name() != FLAGS_service_name) {
+                continue;
+            }
             if ((j % FLAGS_thread_num) != thread_offset) {
                 continue;
             }
