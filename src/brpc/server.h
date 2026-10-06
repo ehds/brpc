@@ -58,6 +58,7 @@ class MongoServiceAdaptor;
 class RestfulMap;
 class RtmpService;
 class RedisService;
+class Socks5Service;
 struct SocketSSLContext;
 
 struct ServerOptions {
@@ -86,6 +87,10 @@ struct ServerOptions {
     // The adaptor will not be deleted by server
     // and must remain valid when server is running.
     const MongoServiceAdaptor* mongo_service_adaptor;
+
+    // Enable no-authentication SOCKS5 TCP CONNECT. Shared with Server; disabled
+    // by default. Sessions are tied to accepted Socket lifetimes.
+    std::shared_ptr<Socks5Service> socks5_service;
 
     // Turn on authentication for all services if `auth' is not nullptr.
     // Default: nullptr
