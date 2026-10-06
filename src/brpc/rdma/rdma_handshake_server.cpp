@@ -160,12 +160,18 @@ static int SendUnnegotiableHello(Socket* socket, int version) {
 // run. See the tail of phase 2.
 static ParseResult FallbackServerHandshake(butil::IOBuf* source, Socket* socket) {
     if (socket->parsing_context() == nullptr) {
-        if (source->size() < HELLO_MAGIC_LEN) {
+        uint8_t magic[HELLO_MAGIC_LEN];
+        const size_t n = source->copy_to(magic, sizeof(magic));
+        if (n < HELLO_MAGIC_LEN) {
+            // Reject mismatching prefixes before waiting for a full magic.
+            // Other protocols may complete their handshake in fewer bytes.
+            if (memcmp(magic, HELLO_MAGIC, n) != 0 &&
+                memcmp(magic, HELLO_MAGIC_V3, n) != 0) {
+                return MakeParseError(PARSE_ERROR_TRY_OTHERS);
+            }
             return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         }
         // Phase 1: consume the client hello and reply an un-negotiable hello.
-        uint8_t magic[HELLO_MAGIC_LEN];
-        CHECK_EQ(source->copy_to(magic, HELLO_MAGIC_LEN), HELLO_MAGIC_LEN);
 
         int version;
         if (memcmp(magic, HELLO_MAGIC, HELLO_MAGIC_LEN) == 0) {

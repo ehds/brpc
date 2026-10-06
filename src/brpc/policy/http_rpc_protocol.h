@@ -24,6 +24,7 @@
 #include "brpc/protocol.h"
 
 namespace brpc {
+class Server;
 namespace policy {
 
 // Put commonly used std::strings (or other constants that need memory
@@ -125,7 +126,7 @@ public:
         return SetBodyReader(r);
     }
 
-    void CheckProgressiveRead(const void* arg, Socket *socket);
+    virtual void CheckProgressiveRead(const void* arg, Socket* socket);
 
 private:
     bool _is_stage2;
@@ -135,9 +136,16 @@ private:
 // Implement functions required in protocol.h
 ParseResult ParseHttpMessage(butil::IOBuf *source, Socket *socket,
                              bool read_eof, const void *arg);
+// Reuse HTTP framing with a derived context supplied by another HTTP-based
+// protocol. The context must obey HttpContext's reference/lifecycle rules.
+ParseResult ParseHttpMessageWithContext(butil::IOBuf* source, Socket* socket,
+                                        bool read_eof, const void* arg,
+                                        HttpContext* (*new_context)(Socket*));
 void ProcessHttpRequest(InputMessageBase *msg);
 void ProcessHttpResponse(InputMessageBase* msg);
 bool VerifyHttpRequest(const InputMessageBase* msg);
+// Verify a parsed request before InputMessenger attaches dispatch metadata.
+bool VerifyHttpRequest(const HttpContext* request, const Server* server, Socket* socket);
 void SerializeHttpRequest(butil::IOBuf* request_buf,
                           Controller* cntl,
                           const google::protobuf::Message* msg);
