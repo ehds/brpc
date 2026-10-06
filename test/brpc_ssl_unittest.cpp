@@ -324,7 +324,8 @@ TEST_F(SSLTest, connect_on_create) {
         brpc::policy::PackRpcRequest,nullptr, ProcessResponse,
         nullptr, nullptr, nullptr, brpc::CONNECTION_TYPE_ALL, "ssl_ut_baidu"
     };
-    ASSERT_EQ(0, RegisterProtocol((brpc::ProtocolType)30, dummy_protocol));
+    ASSERT_EQ(0, RegisterProtocol(
+        static_cast<brpc::ProtocolType>(brpc::ProtocolType_MAX + 1), dummy_protocol));
 
     brpc::InputMessageHandler dummy_handler ={
         dummy_protocol.parse, dummy_protocol.process_response,

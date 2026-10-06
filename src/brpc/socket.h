@@ -285,6 +285,9 @@ struct SocketOptions {
     // Default: false, means that a connection will be established
     // on first write.
     bool connect_on_create{false};
+    // Delay EOF until dispatched input messages are destroyed, including when
+    // using a custom InputMessenger rather than the global client messenger.
+    bool defer_eof{false};
     // Default: nullptr, means no timeout.
     const timespec* connect_abstime{nullptr};
     SocketUser* user{nullptr};
@@ -616,6 +619,9 @@ public:
     // Postpone EOF event until `CheckEOF' has been called
     void PostponeEOF();
     void CheckEOF();
+    // Enable SocketOptions::defer_eof during the first protocol parse, before
+    // dispatching any input messages. Do not call after message dispatch starts.
+    void EnableDeferredEOF() { _defer_eof = true; }
 
     SSLState ssl_state() const { return _ssl_state; }
     bool is_ssl() const { return ssl_state() == SSL_CONNECTED; }
@@ -973,6 +979,7 @@ private:
     // 1-bit flag to ensure `SetEOF' to be called only once
     // 31-bit counter of requests that are currently being processed
     butil::atomic<uint32_t> _ninprocess;
+    bool _defer_eof;
 
     // +---32 bit---+---32 bit---+
     // |  auth flag | auth error |

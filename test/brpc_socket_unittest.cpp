@@ -80,7 +80,8 @@ int main(int argc, char* argv[]) {
                                EchoProcessHuluRequest, EchoProcessHuluRequest,
                                nullptr, nullptr, nullptr,
                                brpc::CONNECTION_TYPE_ALL, "dummy_hulu" };
-    EXPECT_EQ(0,  RegisterProtocol((brpc::ProtocolType)30, dummy_protocol));
+    EXPECT_EQ(0, RegisterProtocol(
+        static_cast<brpc::ProtocolType>(brpc::ProtocolType_MAX + 1), dummy_protocol));
     return RUN_ALL_TESTS();
 }
 

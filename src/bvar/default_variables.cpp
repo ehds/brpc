@@ -27,6 +27,8 @@
 #include <errno.h>
 #if defined(__APPLE__)
 #include <libproc.h>
+#include <mach/mach.h>
+#include <sys/proc.h>                      // BSD process states
 #include <sys/resource.h>
 #else
 #endif
@@ -107,25 +109,74 @@ static bool read_proc_status(ProcStat &stat) {
     }
     return true;
 #elif defined(OS_MACOSX)
-    // TODO(zhujiashun): get remaining state in MacOS.
-    memset(&stat, 0, sizeof(stat));
-    static pid_t pid = getpid();
-    std::ostringstream oss;
-    char cmdbuf[128];
-    snprintf(cmdbuf, sizeof(cmdbuf),
-            "ps -p %ld -o pid,ppid,pgid,sess"
-            ",tpgid,flags,pri,nice | tail -n1", (long)pid);
-    if (butil::read_command_output(oss, cmdbuf) != 0) {
-        LOG(ERROR) << "Fail to read stat";
-        return false;
+    const pid_t pid = getpid();
+    stat.pid = pid;
+    stat.ppid = getppid();
+    stat.pgrp = getpgrp();
+    const pid_t session = getsid(0);
+    stat.session = session >= 0 ? session : 0;
+    errno = 0;
+    const int nice = getpriority(PRIO_PROCESS, 0);
+    if (errno == 0)
+      stat.nice = nice;
+    struct proc_bsdinfo bsd = {};
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, sizeof(bsd)) ==
+        sizeof(bsd)) {
+      stat.flags = bsd.pbi_flags;
+      stat.nice = bsd.pbi_nice;
+      stat.tty_nr = static_cast<int>(bsd.e_tdev);
+      stat.tpgid = static_cast<int>(bsd.e_tpgid);
+
+      // BSD process states are coarser than Linux's task states.
+      switch (bsd.pbi_status) {
+      case SIDL:
+        stat.state = 'I';
+        break;
+      case SRUN:
+        stat.state = 'R';
+        break;
+      case SSLEEP:
+        stat.state = 'S';
+        break;
+      case SSTOP:
+        stat.state = 'T';
+        break;
+      case SZOMB:
+        stat.state = 'Z';
+        break;
+      default:
+        stat.state = '?';
+        break;
+      }
     }
-    const std::string& result = oss.str();
-    if (sscanf(result.c_str(), "%d %d %d %d"
-                              "%d %u %ld %ld",
-               &stat.pid, &stat.ppid, &stat.pgrp, &stat.session,
-               &stat.tpgid, &stat.flags, &stat.priority, &stat.nice) != 8) {
-        PLOG(WARNING) << "Fail to sscanf";
-        return false;
+    struct proc_taskinfo task = {};
+    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, sizeof(task)) ==
+        sizeof(task)) {
+      stat.priority = task.pti_priority;
+      stat.num_threads = task.pti_threadnum;
+    }
+
+    static const long ticks_per_second = sysconf(_SC_CLK_TCK);
+    const auto to_ticks = [](const timeval &time) -> unsigned long {
+      if (ticks_per_second <= 0) {
+        return 0;
+      }
+      return static_cast<uint64_t>(time.tv_sec) * ticks_per_second +
+             static_cast<uint64_t>(time.tv_usec) * ticks_per_second / 1000000;
+    };
+    struct rusage usage = {};
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+      stat.minflt = usage.ru_minflt;
+      stat.majflt = usage.ru_majflt;
+      stat.utime = to_ticks(usage.ru_utime);
+      stat.stime = to_ticks(usage.ru_stime);
+    }
+
+    if (getrusage(RUSAGE_CHILDREN, &usage) == 0) {
+      stat.cminflt = usage.ru_minflt;
+      stat.cmajflt = usage.ru_majflt;
+      stat.cutime = to_ticks(usage.ru_utime);
+      stat.cstime = to_ticks(usage.ru_stime);
     }
     return true;
 #else
@@ -231,25 +282,19 @@ static bool read_proc_memory(ProcMemory &m) {
     }
     return true;
 #elif defined(OS_MACOSX)
-    // TODO(zhujiashun): get remaining memory info in MacOS.
-    memset(&m, 0, sizeof(m));
-    static pid_t pid = getpid();
-    static int64_t pagesize = getpagesize();
-    std::ostringstream oss;
-    char cmdbuf[128];
-    snprintf(cmdbuf, sizeof(cmdbuf), "ps -p %ld -o rss=,vsz=", (long)pid);
-    if (butil::read_command_output(oss, cmdbuf) != 0) {
-        LOG(ERROR) << "Fail to read memory state";
+    mach_task_basic_info_data_t info = {};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    const kern_return_t result = task_info(
+        mach_task_self(), MACH_TASK_BASIC_INFO,
+        reinterpret_cast<task_info_t>(&info), &count);
+    if (result != KERN_SUCCESS) {
+        LOG_ONCE(WARNING) << "Cannot read own task memory, Mach error=" << result;
         return false;
     }
-    const std::string& result = oss.str();
-    if (sscanf(result.c_str(), "%ld %ld", &m.resident, &m.size) != 2) {
-        PLOG(WARNING) << "Fail to sscanf";
-        return false;
-    }
-    // resident and size in Kbytes
-    m.resident = m.resident * 1024 / pagesize;
-    m.size = m.size * 1024 / pagesize;
+    const long pagesize = getpagesize();
+    // ProcMemory stores page counts; its existing getters convert back to bytes.
+    m.resident = static_cast<long>(info.resident_size / pagesize);
+    m.size = static_cast<long>(info.virtual_size / pagesize);
     return true;
 #else
     return false;
