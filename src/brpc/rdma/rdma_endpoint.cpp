@@ -638,11 +638,17 @@ ParseResult RdmaEndpoint::ExecuteServerHandshake(butil::IOBuf* source, Socket* s
 
     if (s->parsing_context() == nullptr) {
         // Phase 1: read the client hello, negotiate, reply server hello.
-        if (source->size() < HELLO_MAGIC_LEN) {
+        uint8_t magic[HELLO_MAGIC_LEN];
+        const size_t n = source->copy_to(magic, sizeof(magic));
+        if (n < HELLO_MAGIC_LEN) {
+            // Reject mismatching prefixes before waiting for a full magic.
+            // Other protocols may complete their handshake in fewer bytes.
+            if (memcmp(magic, HELLO_MAGIC, n) != 0 &&
+                memcmp(magic, HELLO_MAGIC_V3, n) != 0) {
+                return MakeParseError(PARSE_ERROR_TRY_OTHERS);
+            }
             return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         }
-        uint8_t magic[HELLO_MAGIC_LEN];
-        CHECK_EQ(source->copy_to(magic, HELLO_MAGIC_LEN), HELLO_MAGIC_LEN);
 
         // Pick the version-specific server handshake from the peeked magic (the
         // magic is NOT consumed; ReceiveAndParseRemoteHello() reads it again

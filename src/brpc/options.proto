@@ -67,6 +67,7 @@ enum ProtocolType {
     PROTOCOL_H2 = 27;
     PROTOCOL_COUCHBASE = 28;
     PROTOCOL_MYSQL = 29;               // Client side only
+    PROTOCOL_SOCKS5 = 30;              // Server side only; explicitly enabled
 }
 
 enum CompressType {

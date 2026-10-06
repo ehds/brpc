@@ -472,6 +472,7 @@ Socket::Socket(Forbidden f)
     , _health_check_interval_s(-1)
     , _is_hc_related_ref_held(false)
     , _ninprocess(1)
+    , _defer_eof(false)
     , _auth_flag_error(0)
     , _auth_id(INVALID_BTHREAD_ID)
     , _auth_context(nullptr)
@@ -720,6 +721,7 @@ int Socket::Create(const SocketOptions& options, SocketId* id) {
 }
 
 int Socket::OnCreated(const SocketOptions& options) {
+    _defer_eof = options.defer_eof;
     if (_io_event.Init((void*)id()) != 0) {
         LOG(ERROR) << "Fail to init IOEvent";
         SetFailed(ENOMEM, "%s", "Fail to init IOEvent");

@@ -51,13 +51,13 @@ inline bool Socket::IsAvailable() const {
 static const uint32_t EOF_FLAG = (1 << 31);
 
 inline void Socket::PostponeEOF() {
-    if (CreatedByConnect()) { // not needed at server-side
+    if (_defer_eof || CreatedByConnect()) {
         _ninprocess.fetch_add(1, butil::memory_order_relaxed);
     }
 }
 
 inline void Socket::CheckEOF() {
-    if (CreatedByConnect()) { // not needed at server-side
+    if (_defer_eof || CreatedByConnect()) {
         CheckEOFInternal();
     }
 }

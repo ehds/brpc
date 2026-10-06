@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-find_package(Gperftools)
+#find_package(Gperftools)
 
 add_library(brpc_test_config INTERFACE)
 target_link_libraries(brpc_test_config INTERFACE brpc_common_config)

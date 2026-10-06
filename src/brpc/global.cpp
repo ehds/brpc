@@ -82,6 +82,7 @@
 #include "brpc/policy/couchbase_protocol.h"
 #include "brpc/policy/streaming_rpc_protocol.h"
 #include "brpc/policy/mongo_protocol.h"
+#include "brpc/policy/socks5_protocol.h"
 #include "brpc/policy/redis_protocol.h"
 #include "brpc/policy/nshead_mcpack_protocol.h"
 #include "brpc/policy/rtmp_protocol.h"
@@ -578,6 +579,15 @@ static void GlobalInitializeOrDieImpl() {
                                 nullptr, nullptr, nullptr,
                                 CONNECTION_TYPE_POOLED, "mongo" };
     if (RegisterProtocol(PROTOCOL_MONGO, mongo_protocol) != 0) {
+        exit(1);
+    }
+
+    Protocol socks5_protocol = { policy::ParseSocks5Message,
+                                nullptr, nullptr,
+                                policy::ProcessSocks5Request, nullptr,
+                                nullptr, nullptr, nullptr,
+                                CONNECTION_TYPE_SINGLE, "socks5" };
+    if (RegisterProtocol(PROTOCOL_SOCKS5, socks5_protocol) != 0) {
         exit(1);
     }
 
