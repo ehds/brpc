@@ -707,6 +707,7 @@ set(PROTO_FILES idl_options.proto
                 brpc/get_favicon.proto
                 brpc/span.proto
                 brpc/builtin_service.proto
+                brpc/http_proxy.proto
                 brpc/grpc_health_check.proto
                 brpc/get_js.proto
                 brpc/errno.proto

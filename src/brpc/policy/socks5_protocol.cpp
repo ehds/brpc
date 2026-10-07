@@ -19,10 +19,8 @@
 #include "brpc/policy/socks5_protocol.h"
 
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <algorithm>
 #include <cstring>
-#include <deque>
 #include <map>
 #include <mutex>
 #include <utility>
@@ -34,6 +32,8 @@
 #include "bthread/mutex.h"
 #include "brpc/input_messenger.h"
 #include "brpc/closure_guard.h"
+#include "brpc/details/proxy_upstream.h"
+#include "brpc/details/tcp_tunnel.h"
 #include "brpc/server.h"
 #include "brpc/socket.h"
 #include "brpc/socks5.h"
@@ -43,46 +43,23 @@
 namespace brpc {
 namespace policy {
 
-struct Socks5Action {
-    enum Kind { METHOD, CONNECT, TO_UPSTREAM, TO_CLIENT, ERROR } kind;
-    Socks5Request request;
-    unsigned char code = 0;
-    DestroyingPtr<InputMessageBase> message;
-};
-
-struct Socks5Session {
+struct Socks5Session : details::TcpTunnel {
     enum ParseStage { GREETING, REQUEST, BYTES, REJECTED } parse_stage = GREETING;
-    bthread::Mutex mutex;
-    bool closed = false;
     bool connected = false;
-    bool draining = false;
     bool method_replied = false;
     bool connect_replied = false;
     std::vector<unsigned char> offered_methods;
     std::shared_ptr<void> user_data;
-    size_t pending_bytes = 0;
-    SocketId client;
-    SocketId upstream = INVALID_SOCKET_ID;
     int64_t handshake_deadline_us;
-    std::deque<std::shared_ptr<Socks5Action>> actions;
     std::shared_ptr<Socks5Runtime> runtime;
     std::weak_ptr<Socks5Service> service;
+    void OnClosed() override;
 };
 
 struct Socks5Context : Destroyable {
     explicit Socks5Context(std::shared_ptr<Socks5Session> s) : session(std::move(s)) {}
     void Destroy() override { delete this; }
     std::shared_ptr<Socks5Session> session;
-};
-
-// Dispatch messages merely schedule a serial drain. Actions are appended in
-// parse order, so concurrent process_request calls cannot reorder tunnel bytes.
-struct Socks5Message : InputMessageBase {
-    Socks5Message(std::shared_ptr<Socks5Session> s, std::shared_ptr<Socks5Action> a)
-        : session(std::move(s)), action(std::move(a)) {}
-    void DestroyImpl() override { delete this; }
-    std::shared_ptr<Socks5Session> session;
-    std::shared_ptr<Socks5Action> action;
 };
 
 struct Socks5Runtime {
@@ -94,12 +71,10 @@ struct Socks5Runtime {
     bool shutting_down = false;
     size_t jobs = 0;
     std::map<SocketId, std::shared_ptr<Socks5Session>> sessions;
-    InputMessenger upstream_input;
 };
 
-// Hold an accepted Socket reference before scheduling each task. Acceptor::Join
-// already waits for these references to be released; no Server lifecycle hook
-// or permanent Socket->Session->Socket reference cycle is needed.
+// Hold Socket and service during the timeout watcher. Queue tasks retain their
+// own references; Acceptor::Join waits for both without a Server-specific hook.
 struct Socks5Task {
     explicit Socks5Task(std::shared_ptr<Socks5Session> s)
         : session(std::move(s)), service(session->service.lock()) {}
@@ -109,68 +84,21 @@ struct Socks5Task {
     std::shared_ptr<Socks5Service> service;
 };
 
-static void Close(const std::shared_ptr<Socks5Session>& s) {
-    SocketId upstream;
-    std::deque<std::shared_ptr<Socks5Action>> discarded;
-    {
-        std::lock_guard<bthread::Mutex> lock(s->mutex);
-        if (s->closed) return;
-        s->closed = true;
-        discarded.swap(s->actions);
-        upstream = s->upstream;
-    }
-    Socket::SetFailed(s->client);
-    if (upstream != INVALID_SOCKET_ID) Socket::SetFailed(upstream);
-    {
-        std::lock_guard<bthread::Mutex> runtime_lock(s->runtime->mutex);
-        s->runtime->sessions.erase(s->client);
-        s->runtime->condition.notify_all();
-    }
+void Socks5Session::OnClosed() {
+    std::lock_guard<bthread::Mutex> runtime_lock(runtime->mutex);
+    runtime->sessions.erase(client);
+    runtime->condition.notify_all();
 }
 
-static int Failed(bthread_id_t id, void* arg, int) {
-    std::unique_ptr<std::shared_ptr<Socks5Session>> s(
-        static_cast<std::shared_ptr<Socks5Session>*>(arg));
-    // Destroy the notification before failing the peer, to avoid recursive
-    // callbacks attempting to lock this id again.
-    bthread_id_unlock_and_destroy(id);
-    Close(*s);
-    return 0;
-}
+static void Close(const std::shared_ptr<Socks5Session>& s) { s->Close(); }
 
-static void WatchFailure(SocketId socket_id, const std::shared_ptr<Socks5Session>& s) {
-    auto* arg = new std::shared_ptr<Socks5Session>(s);
-    bthread_id_t id;
-    if (bthread_id_create(&id, arg, Failed) != 0) {
-        delete arg;
-        Close(s);
-        return;
-    }
-    SocketUniquePtr socket;
-    if (Socket::Address(socket_id, &socket) != 0) {
-        bthread_id_error(id, ECONNRESET);
-    } else {
-        socket->NotifyOnFailed(id);
-    }
+static void WatchFailure(SocketId id, const std::shared_ptr<Socks5Session>& s) {
+    Socks5Session::WatchFailure(id, s);
 }
 
 static int Written(bthread_id_t id, void* arg, int error) {
     *static_cast<int*>(arg) = error;
     return bthread_id_unlock_and_destroy(id);
-}
-
-static bool Write(SocketId id, butil::IOBuf* data) {
-    SocketUniquePtr socket;
-    if (Socket::Address(id, &socket) != 0) return false;
-    bthread_id_t wait;
-    int error = 0;
-    if (bthread_id_create(&wait, &error, Written) != 0) return false;
-    Socket::WriteOptions options;
-    options.id_wait = wait;
-    options.notify_on_success = true;
-    if (socket->Write(data, &options) != 0) bthread_id_error(wait, errno);
-    bthread_id_join(wait);
-    return error == 0;
 }
 
 static bool Result(const std::shared_ptr<Socks5Session>& s,
@@ -197,64 +125,29 @@ static bool Result(const std::shared_ptr<Socks5Session>& s,
     }
     butil::IOBuf data;
     data.append(reply, size);
-    return Write(s->client, &data);
+    return s->WriteClient(&data);
 }
 
-// Establish the upstream TCP connection requested by SOCKS5 CONNECT and attach
-// it to the session for subsequent DATA forwarding. Return a SOCKS5 REP code:
-// 0 means the upstream was created and its local address was stored in bound;
-// a nonzero code indicates failure. The caller sends the CONNECT reply for
-// either result. This function does not send a reply or complete an application
-// request.
+// The client destination is logical input to the adapter. Connect may establish
+// another endpoint or transport. Only a ready adapter returns success; this
+// function does not send a protocol reply.
 static unsigned char Connect(const std::shared_ptr<Socks5Session>& s,
                              const Socks5Request& request,
                              butil::EndPoint* bound) {
-    addrinfo hints = {};
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_family = AF_UNSPEC;
-    addrinfo* addresses = nullptr;
-    // Simplified mapping: any name-resolution failure is REP=4 (host unreachable).
-    if (getaddrinfo(request.host.c_str(), std::to_string(request.port).c_str(),
-                    &hints, &addresses) != 0) return 4;
-    std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> guard(addresses, freeaddrinfo);
-    const timespec deadline = butil::milliseconds_from_now(
-        s->runtime->options.connect_timeout_ms);
-    for (auto* a = addresses; a; a = a->ai_next) {
-        {
-            std::lock_guard<bthread::Mutex> lock(s->mutex);
-            if (s->closed) return 1;  // REP=1: general SOCKS server failure.
-        }
-        SocketOptions options;
-        sockaddr_storage address = {};
-        if (a->ai_addrlen > sizeof(address)) continue;
-        memcpy(&address, a->ai_addr, a->ai_addrlen);
-        if (butil::sockaddr2endpoint(&address, a->ai_addrlen, &options.remote_side) != 0) {
-            continue;
-        }
-        // Create performs the upstream connect using brpc's Socket machinery.
-        options.connect_on_create = true;
-        options.defer_eof = true;
-        options.connect_abstime = &deadline;
-        options.initial_parsing_context = new Socks5Context(s);
-        SocketId id;
-        if (s->runtime->upstream_input.Create(options, &id) != 0) continue;
-        bool closed;
-        {
-            std::lock_guard<bthread::Mutex> lock(s->mutex);
-            closed = s->closed;
-            if (!closed) s->upstream = id;
-        }
-        // The client may have disconnected while the upstream was connecting.
-        if (closed) { Socket::SetFailed(id); return 1; }
-        WatchFailure(id, s);
-        SocketUniquePtr upstream;
-        if (Socket::Address(id, &upstream) != 0) return 1;
-        *bound = upstream->local_side();
-        return 0;
+    auto peer = Socks5Session::CreateUpstream(s, s->runtime->options.upstream_factory);
+    if (!peer) return 1;
+    ProxyConnectRequest connect;
+    connect.target.host = request.host;
+    connect.target.port = request.port;
+    connect.route = connect.target;
+    connect.timeout_ms = s->runtime->options.connect_timeout_ms;
+    const auto result = details::AwaitProxyConnect(peer.get(), connect);
+    // Preserve the existing REP mapping for default DNS/connect failures.
+    if (result.error) {
+        return result.resolve_failed ? 4 : (result.error == ECANCELED ? 1 : 5);
     }
-    // Simplified mapping: all exhausted connection attempts return REP=5
-    // (connection refused), including timeouts and other connection failures.
-    return 5;
+    *bound = result.bound;
+    return 0;
 }
 
 static void JobDone(const std::shared_ptr<Socks5Runtime>& runtime) {
@@ -269,7 +162,7 @@ public:
     void Run() override {
         const bthread_id_t id = _id;
         delete this;
-        // Destruction of the id wakes the serial worker. No request or
+        // Destruction of the id wakes the serial consumer. No request or
         // connection pointer may be accessed after signaling completion.
         bthread_id_error(id, 0);
     }
@@ -295,105 +188,26 @@ struct Socks5Dispatcher {
     }
 };
 
-static void* Drain(void* arg) {
-    std::unique_ptr<Socks5Task> task(static_cast<Socks5Task*>(arg));
-    auto s = task->session;
-    while (true) {
-        std::shared_ptr<Socks5Action> action;
-        size_t size;
-        {
-            std::lock_guard<bthread::Mutex> lock(s->mutex);
-            if (s->closed || s->actions.empty() || !s->actions.front()->message) {
-                s->draining = false;
-                break;
+// Server registration requires a process callback. Parsing submits all work
+// directly and returns no message, so this callback is not used by SOCKS5.
+void ProcessSocks5Request(InputMessageBase* message) { message->Destroy(); }
+
+static ParseResult Enqueue(Socket* socket, butil::IOBuf* source, size_t size,
+                           const std::shared_ptr<Socks5Session>& session,
+                           const std::shared_ptr<Socks5Request>& request,
+                           unsigned char error_code = 0) {
+    auto service = session->service.lock();
+    const bool payload = request->type == Socks5Request::DATA;
+    const auto status = session->Submit(socket, source, size,
+        payload ? &request->data : nullptr,
+        [session, service, request, error_code] {
+            if (error_code) {
+                Result(session, error_code);
+                return false;
             }
-            action = s->actions.front();
-            s->actions.pop_front();
-            size = action->request.data.size();
-        }
-        bool ok = true;
-        if (action->kind == Socks5Action::ERROR) {
-            Result(s, action->code);
-            ok = false;
-        } else if (action->kind == Socks5Action::TO_CLIENT) {
-            ok = Write(s->client, &action->request.data);
-        } else {
-            ok = Socks5Dispatcher::Process(s, task->service.get(), &action->request);
-        }
-        {
-            std::lock_guard<bthread::Mutex> lock(s->mutex);
-            s->pending_bytes -= size;
-        }
-        if (!ok) Close(s);
-    }
-    JobDone(s->runtime);
-    return nullptr;
-}
-
-void ProcessSocks5Request(InputMessageBase* base) {
-    DestroyingPtr<Socks5Message> message(static_cast<Socks5Message*>(base));
-    auto s = message->session;
-    std::unique_ptr<Socks5Task> task(new Socks5Task(s));
-    if (Socket::Address(s->client, &task->client) != 0) {
-        Close(s);
-        return;
-    }
-    auto action = message->action;
-    {
-        std::lock_guard<bthread::Mutex> lock(s->mutex);
-        if (s->closed) return;
-        // Keep the input message (and its EOF postponement) alive until its
-        // bytes have actually been forwarded. Release the back-reference to
-        // the action before transferring message ownership, avoiding a cycle.
-        message->action.reset();
-        action->message.reset(message.release());
-        if (s->draining) return;
-        s->draining = true;
-        // Count the worker before Close() can release the queued message and
-        // allow Server::Join() to finish waiting for accepted Socket refs.
-        std::lock_guard<bthread::Mutex> runtime_lock(s->runtime->mutex);
-        ++s->runtime->jobs;
-    }
-    bthread_t tid;
-    if (bthread_start_background(&tid, nullptr, Drain, task.get()) != 0) {
-        Close(s);
-        JobDone(s->runtime);
-    } else {
-        task.release();
-    }
-}
-
-static ParseResult Enqueue(butil::IOBuf* source, size_t size,
-                           const std::shared_ptr<Socks5Session>& s, Socks5Action action) {
-    auto queued = std::make_shared<Socks5Action>(std::move(action));
-    bool overflow = false;
-    {
-        std::lock_guard<bthread::Mutex> lock(s->mutex);
-        if (s->closed) return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
-        const size_t limit = s->runtime->options.max_pending_bytes;
-        const bool payload = queued->kind == Socks5Action::TO_UPSTREAM ||
-                             queued->kind == Socks5Action::TO_CLIENT;
-        overflow = payload && size > limit - s->pending_bytes;
-        if (!overflow) {
-            if (payload) {
-                source->cutn(&queued->request.data, size);
-                s->pending_bytes += size;
-            } else {
-                source->pop_front(size);
-            }
-            s->actions.push_back(queued);
-        }
-    }
-    if (overflow) { Close(s); return MakeParseError(PARSE_ERROR_TOO_BIG_DATA); }
-    return MakeMessage(new Socks5Message(s, queued));
-}
-
-static ParseResult ParseUpstream(butil::IOBuf* source, Socket* socket, bool, const void*) {
-    if (source->empty()) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
-    auto* ctx = static_cast<Socks5Context*>(socket->parsing_context());
-    Socks5Action action;
-    action.kind = Socks5Action::TO_CLIENT;
-    return Enqueue(source, source->size(), ctx->session, std::move(action));
+            return Socks5Dispatcher::Process(session, service.get(), request.get());
+        });
+    return status.ok() ? MakeMessage(nullptr) : details::MakeTunnelEnqueueError(status);
 }
 
 static void* WatchHandshake(void* arg) {
@@ -432,7 +246,8 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
     }
     auto s = ctx->session;
     // Only the Socket's serialized parser accesses parse_stage.
-    Socks5Action action;
+    auto request = std::make_shared<Socks5Request>();
+    unsigned char error_code = 0;
     unsigned char bytes[262];
     size_t available = std::min(source->size(), sizeof(bytes));
     source->copy_to(bytes, available);
@@ -440,28 +255,26 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
         if (available < 2) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         size_t size = 2 + bytes[1];
         if (available < size) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
-        action.kind = Socks5Action::METHOD;
-        action.request.type = Socks5Request::METHOD;
-        action.request.methods.assign(bytes + 2, bytes + size);
+        request->type = Socks5Request::METHOD;
+        request->methods.assign(bytes + 2, bytes + size);
         {
             std::lock_guard<bthread::Mutex> lock(s->mutex);
-            s->offered_methods = action.request.methods;
+            s->offered_methods = request->methods;
         }
-        action.code = 255;
-        for (size_t i = 2; i < size; ++i) if (bytes[i] == 0) action.code = 0;
-        s->parse_stage = action.code == 0 ? Socks5Session::REQUEST : Socks5Session::REJECTED;
-        return Enqueue(source, size, s, std::move(action));
+        const bool no_auth = std::find(request->methods.begin(), request->methods.end(), 0)
+                             != request->methods.end();
+        s->parse_stage = no_auth ? Socks5Session::REQUEST : Socks5Session::REJECTED;
+        return Enqueue(socket, source, size, s, request);
     }
     if (s->parse_stage == Socks5Session::REQUEST) {
         if (available < 4) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
-        action.kind = Socks5Action::ERROR;
-        action.request.type = Socks5Request::CONNECT;
-        if (bytes[0] != 5 || bytes[2] != 0) action.code = 1;
-        else if (bytes[1] != 1) action.code = 7;
-        else if (bytes[3] != 1 && bytes[3] != 3 && bytes[3] != 4) action.code = 8;
+        request->type = Socks5Request::CONNECT;
+        if (bytes[0] != 5 || bytes[2] != 0) error_code = 1;
+        else if (bytes[1] != 1) error_code = 7;
+        else if (bytes[3] != 1 && bytes[3] != 3 && bytes[3] != 4) error_code = 8;
         size_t size = 4;
-        if (!action.code) {
-            action.request.address_type = bytes[3];
+        if (!error_code) {
+            request->address_type = bytes[3];
             size_t length = bytes[3] == 1 ? 4 : 16;
             size_t offset = 4;
             if (bytes[3] == 3) {
@@ -472,36 +285,30 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
             size = offset + length + 2;
             if (available < size) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
             if (bytes[3] == 3) {
-                action.request.host.assign(reinterpret_cast<char*>(bytes + offset), length);
-                if (!length || action.request.host.find(char(0)) != std::string::npos) action.code = 8;
+                request->host.assign(reinterpret_cast<char*>(bytes + offset), length);
+                if (!length || request->host.find(char(0)) != std::string::npos) error_code = 8;
             } else {
                 char host[INET6_ADDRSTRLEN];
                 inet_ntop(bytes[3] == 1 ? AF_INET : AF_INET6, bytes + offset, host, sizeof(host));
-                action.request.host = host;
+                request->host = host;
             }
-            action.request.port = (uint16_t(bytes[size - 2]) << 8) | bytes[size - 1];
+            request->port = (uint16_t(bytes[size - 2]) << 8) | bytes[size - 1];
         }
-        if (!action.code) action.kind = Socks5Action::CONNECT;
-        s->parse_stage = action.code ? Socks5Session::REJECTED : Socks5Session::BYTES;
-        return Enqueue(source, size, s, std::move(action));
+        s->parse_stage = error_code ? Socks5Session::REJECTED : Socks5Session::BYTES;
+        return Enqueue(socket, source, size, s, request, error_code);
     }
     if (s->parse_stage == Socks5Session::REJECTED) {
         // A rejection reply is queued; do not fail the socket before it is sent.
         source->clear();
         return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
     }
-    action.kind = Socks5Action::TO_UPSTREAM;
-    action.request.type = Socks5Request::DATA;
-    return Enqueue(source, source->size(), s, std::move(action));
+    request->type = Socks5Request::DATA;
+    return Enqueue(socket, source, source->size(), s, request);
 }
 }  // namespace policy
 
 Socks5Service::Socks5Service(const Socks5Options& options)
-    : _runtime(std::make_shared<policy::Socks5Runtime>(options)) {
-    InputMessageHandler handler = {policy::ParseUpstream, policy::ProcessSocks5Request,
-                                  nullptr, nullptr, "socks5_upstream"};
-    CHECK_EQ(0, _runtime->upstream_input.AddNonProtocolHandler(handler));
-}
+    : _runtime(std::make_shared<policy::Socks5Runtime>(options)) {}
 
 uint64_t Socks5Connection::socket_id() const { return _session->client; }
 
@@ -522,7 +329,7 @@ bool Socks5Connection::ReplyMethod(unsigned char method) const {
     const unsigned char reply[] = {5, method};
     butil::IOBuf data;
     data.append(reply, sizeof(reply));
-    const bool ok = policy::Write(_session->client, &data);
+    const bool ok = _session->WriteClient(&data);
     if (!ok || method == 255) Close();
     return ok;
 }
@@ -550,7 +357,7 @@ bool Socks5Connection::Write(butil::IOBuf* data) const {
         std::lock_guard<bthread::Mutex> lock(_session->mutex);
         if (_session->closed || !_session->connected) return false;
     }
-    const bool ok = policy::Write(_session->client, data);
+    const bool ok = _session->WriteClient(data);
     if (!ok) Close();
     return ok;
 }
@@ -587,12 +394,7 @@ void Socks5Service::Process(Socks5Connection* connection, Socks5Request* request
         // reports reply-operation success; do not retry with another REP code.
         if (!connection->ReplyConnect(code, bound)) connection->Close();
     } else {
-        SocketId upstream;
-        {
-            std::lock_guard<bthread::Mutex> lock(connection->_session->mutex);
-            upstream = connection->_session->upstream;
-        }
-        if (!policy::Write(upstream, &request->data)) connection->Close();
+        if (!connection->_session->WriteUpstream(&request->data)) connection->Close();
     }
 }
 Socks5Service::~Socks5Service() {
@@ -613,6 +415,7 @@ std::shared_ptr<policy::Socks5Session> Socks5Service::NewSession(uint64_t socket
     if (!_runtime->options.IsValid()) return nullptr;
     auto s = std::make_shared<policy::Socks5Session>();
     s->client = socket_id;
+    s->max_pending_bytes = _runtime->options.max_pending_bytes;
     s->runtime = _runtime;
     s->service = shared_from_this();
     s->handshake_deadline_us = butil::gettimeofday_us() +

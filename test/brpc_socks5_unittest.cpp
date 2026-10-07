@@ -33,13 +33,26 @@
 #include "brpc/policy/rdma_handshake_protocol.h"
 
 namespace {
+// Hold processing while parser-only tests inspect fragmented/coalesced input.
+// Release in TearDown; real socket tests below cover actual dispatch and output.
+class ParserService : public brpc::Socks5Service {
+public:
+    explicit ParserService(const brpc::Socks5Options& options) : Socks5Service(options) {}
+    void Process(brpc::Socks5Connection* connection, brpc::Socks5Request* request,
+                 google::protobuf::Closure* done) override {
+        release.wait();
+        Socks5Service::Process(connection, request, done);
+    }
+    bthread::CountdownEvent release;
+};
+
 class Socks5Test : public testing::Test {
 protected:
     void SetUp() override {
         brpc::Socks5Options settings;
         settings.max_pending_bytes = 64;
         settings.handshake_timeout_ms = 100;
-        service = std::make_shared<brpc::Socks5Service>(settings);
+        service = std::make_shared<ParserService>(settings);
         brpc::ServerOptions options;
         options.socks5_service = service;
         options.enabled_protocols = "socks5";
@@ -50,6 +63,7 @@ protected:
         ASSERT_EQ(0, brpc::Socket::Address(id, &socket));
     }
     void TearDown() override {
+        service->release.signal();
         brpc::Socket::SetFailed(id);
         socket.reset();
         server.Stop(0);
@@ -61,10 +75,10 @@ protected:
     }
     void ConsumeMessage(brpc::ParseResult result) {
         ASSERT_TRUE(result.is_ok());
-        brpc::DestroyingPtr<brpc::InputMessageBase> message(result.message());
+        EXPECT_EQ(nullptr, result.message());  // Parsing submits processing directly.
     }
     brpc::Server server;
-    std::shared_ptr<brpc::Socks5Service> service;
+    std::shared_ptr<ParserService> service;
     brpc::SocketId id = brpc::INVALID_SOCKET_ID;
     brpc::SocketUniquePtr socket;
     butil::IOBuf input;

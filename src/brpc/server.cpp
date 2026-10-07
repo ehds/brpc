@@ -154,6 +154,7 @@ ServerOptions::ServerOptions()
     , http_master_service(nullptr)
     , health_reporter(nullptr)
     , rtmp_service(nullptr)
+    , strict_enabled_protocols(false)
     , redis_service(nullptr)
     , bthread_tag(BTHREAD_TAG_DEFAULT)
     , rpc_pb_message_factory(nullptr)
@@ -637,13 +638,12 @@ Acceptor* Server::BuildAcceptor() {
             // The protocol does not support server-side.
             continue;
         }
-        // Erase whatever the exemptions below say. http, h2 and
-        // rdma_handshake are always served, but they are still
-        // valid names for the whitelist.
+        // Implicit protocols are still valid names in either whitelist mode.
         bool in_whitelist = (whitelist.erase(protocols[i].name) != 0);
         if (has_whitelist && !in_whitelist &&
-            !is_http_protocol(protocols[i].name) &&
-            !is_rdma_handshake_protocol(protocols[i].name)) {
+            (_options.strict_enabled_protocols ||
+             (!is_http_protocol(protocols[i].name) &&
+              !is_rdma_handshake_protocol(protocols[i].name)))) {
             // the protocol is not allowed to serve.
             RPC_VLOG << "Skip protocol=" << protocols[i].name;
             continue;

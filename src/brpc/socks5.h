@@ -28,6 +28,7 @@
 #include <google/protobuf/service.h>
 #include "butil/endpoint.h"
 #include "butil/iobuf.h"
+#include "brpc/proxy_upstream.h"
 
 namespace brpc {
 namespace policy {
@@ -73,6 +74,8 @@ private:
 };
 
 struct Socks5Options {
+    // One adapter per connection; empty selects the default brpc TCP adapter.
+    ProxyUpstreamFactory upstream_factory;
     size_t max_pending_bytes = 1024 * 1024;
     int handshake_timeout_ms = 10000;
     int connect_timeout_ms = 3000;

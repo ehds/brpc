@@ -40,6 +40,159 @@ python3 example/socks5_proxy/smoke_test.py \
   example/socks5_proxy/build/socks5_custom_service
 ```
 
+## 同一 Server、同一端口支持 HTTP CONNECT 与 SOCKS5
+
+构建会同时生成 `socks5_http_proxy`，源码为 `mixed_server.cpp`。代理 Server 在同一
+端口上处理两个协议，并支持普通 HTTP 正向代理；同一进程另外启动一个独立
+brpc Server，提供原有内建网页工具。
+
+```sh
+./example/socks5_proxy/build/socks5_http_proxy 127.0.0.1:1080
+```
+
+## 独立网页工具 Server
+
+组合示例默认同时监听：
+
+- `127.0.0.1:1080`：SOCKS5、HTTP CONNECT 和普通 HTTP 代理。
+- `127.0.0.1:8080`：brpc 内建网页工具，普通 HTTP/h2 协议，无代理 master service。
+
+浏览器直接打开 `http://127.0.0.1:8080/`。常用页面包括 `/status`、`/vars`、
+`/flags`、`/connections`、`/rpcz`、`/bthreads`、`/sockets`、`/brpc_metrics` 等。
+可更换工具 Server 的监听地址，例如：
+
+```sh
+./example/socks5_proxy/build/socks5_http_proxy 127.0.0.1:1080 \
+  --admin_address=127.0.0.1:8081
+```
+
+网页工具和代理处于同一进程，`/vars`、`/brpc_metrics` 可查看进程全局 bvar 和两个
+Server 的指标。代理 Server 的指标前缀为 `rpc_server_proxy`，工具 Server 为
+`rpc_server_proxy_admin`。`/status` 和 `/connections` 的服务端部分对应工具
+Server 自身；独立 Server 不会自动列出代理 Server 的所有入站隧道。
+`/sockets/<SocketId>` 可以查看同进程 Socket 的调试信息。
+
+程序收到 SIGINT/SIGTERM 时先停止两个 Server，再等待活动任务结束。工具端口
+启动失败会停止已启动的代理 Server，返回非零退出码。代理端口上的 origin-form
+`/status` 等请求仍不会进入内建网页路由。两个 Server 的连接数上限独立：代理 128，
+工具 64。工具 Server 空闲超时为 30 秒，不受代理 `--idle_timeout_sec` 参数影响。
+
+## 组合示例启动参数
+
+组合示例支持以下启动参数，时间单位见表：
+
+| 参数 | 默认值 | 作用 |
+|---|---|---|
+| `--admin_address` | `127.0.0.1:8080` | 独立网页工具 Server 的监听地址 |
+| `--upstream_host` / `--upstream_port` | 空 / 0 | 可选固定实际上游；两者一起设置，仅作用于 SOCKS5 和 HTTP CONNECT |
+| `--connect_timeout_ms` | 15000 毫秒 | SOCKS5、HTTP CONNECT 及普通 HTTP 转发到上游的 TCP 建连等待 |
+| `--handshake_timeout_ms` | 30000 毫秒 | SOCKS5 整个握手，包括等待客户端报文和连接上游 |
+| `--request_timeout_ms` | 30000 毫秒 | 普通 HTTP 转发的整个请求，包括 TCP 建连和等待响应 |
+| `--idle_timeout_sec` | 60 秒 | 客户端连接空闲超时；小于等于 0 时关闭空闲检查 |
+
+例如把 TCP 建连等待延长到 30 秒，同时给其他阶段留出时间：
+
+```sh
+./example/socks5_proxy/build/socks5_http_proxy 127.0.0.1:1080 \
+  --connect_timeout_ms=30000 \
+  --handshake_timeout_ms=60000 \
+  --request_timeout_ms=60000 \
+  --idle_timeout_sec=120
+```
+
+提高建连超时时，SOCKS5 握手和普通 HTTP 请求的总超时应更长；空闲检查也不要
+先于建连等待关闭客户端连接。CONNECT 成功后的隧道没有上述 HTTP 请求总超时。
+TCP 建连超时不包括系统 DNS 查询，也不控制隧道内客户端的 TLS 握手及 curl 自身的
+`--max-time`。参数无须修改 brpc 核心源码；其他示例及公共 Options 的默认值不变。
+
+另一个终端启动前述本地 HTTP 服务，然后分别通过 SOCKS5 和 HTTP CONNECT 访问：
+
+```sh
+curl --noproxy "" --socks5-hostname 127.0.0.1:1080 http://localhost:8000/
+curl --noproxy "" -x http://127.0.0.1:1080 --proxytunnel http://localhost:8000/
+```
+
+HTTPS 使用 `curl -x http://127.0.0.1:1080 https://example.com/` 会自动发起
+CONNECT；普通 HTTP 不加 `--proxytunnel` 时走正向转发。
+
+核心配置如下，两种代理也可以分别传入自定义处理器：
+
+```cpp
+#include "brpc/http_proxy.h"
+#include "brpc/server.h"
+#include "brpc/socks5.h"
+
+brpc::Socks5Options socks5_options;
+socks5_options.connect_timeout_ms = 15000;
+socks5_options.handshake_timeout_ms = 30000;
+brpc::HttpProxyOptions http_options;
+http_options.connect_timeout_ms = 15000;
+http_options.request_timeout_ms = 30000;
+
+brpc::ServerOptions options;
+options.socks5_service = std::make_shared<brpc::Socks5Service>(socks5_options);
+options.http_master_service = brpc::NewHttpProxyMasterService(
+    std::make_shared<brpc::HttpProxyService>(http_options));
+options.enabled_protocols = "socks5 http_proxy";
+options.strict_enabled_protocols = true;
+options.idle_timeout_sec = 60;
+
+brpc::Server server;
+server.Start("127.0.0.1:1080", &options);
+```
+
+SOCKS5 的首字节为 `0x05`，HTTP CONNECT 以 `CONNECT` 开始。协议探测只在
+握手阶段进行；建立隧道后，连接继续通过已选协议的会话状态转发原始字节。
+严格白名单排除普通 `http/h2` 和其他隐式协议，避免普通 HTTP 入口先接走 CONNECT。
+
+## 自定义上游及实际连接地址
+
+两种隧道协议的 Options 都支持 `upstream_factory`，每条连接创建独立的
+`brpc::ProxyUpstream`。空 factory 保留默认 brpc TCP 直连实现。连接、客户端数据
+处理、上游发送、上游返回数据处理、上游解析及关闭均可覆盖，客户端读取和写回
+仍由框架负责。完整接口、回调约定及示例见
+[HTTP proxy README](../http_proxy/README.md#自定义隧道上游)。
+
+自定义 OnUpstreamData 处理完上游返回数据后，调用
+`tunnel().WriteClient(data, std::move(done))` 写回客户端，无需委托父类实现。
+WriteClient 不再触发 OnUpstreamData；自定义传输的原始读取回调仍调用 Receive，
+由框架保持握手回复和数据处理顺序。输出接口和完成回调约定见上述文档。
+
+组合示例中的 `FixedUpstream` 演示连接独立于客户端目标的实际地址：
+
+```sh
+python3 -m http.server 8000 --bind 127.0.0.1
+./example/socks5_proxy/build/socks5_http_proxy 127.0.0.1:1080 \
+  --upstream_host=127.0.0.1 --upstream_port=8000
+```
+
+客户端请求的目标可以是无法解析的逻辑地址，两种隧道都会实际连接本机 8000：
+
+```sh
+curl --noproxy "" --socks5-hostname 127.0.0.1:1080 http://logical.invalid:1234/
+curl --noproxy "" -x http://127.0.0.1:1080 --proxytunnel http://logical.invalid:1234/
+```
+
+这只是固定 TCP 目标示例，未自动实现其他代理的认证或握手。若实际连接到 SOCKS5、
+HTTP CONNECT 或其他网关，用户 Connect 实现必须完成该上游的协商再报告成功，
+可通过 ParseUpstreamData 在客户端握手期间处理上游控制帧。普通 HTTP 正向转发
+继续由 HttpProxyService::Forward 定制，不受固定上游参数影响。
+组合示例未启用 RDMA 握手。原 `socks5_proxy` 和自定义回显示例保留各自配置。
+
+组合集成测试复用 HTTP 代理测试与 SOCKS5 握手/转发测试，额外覆盖同一端口的
+两种协议并发、HTTP/HTTPS 经 SOCKS5，以及同时停止活动隧道和未完成的握手：
+
+```sh
+python3 example/socks5_proxy/mixed_smoke_test.py \
+  example/socks5_proxy/build/socks5_http_proxy
+```
+
+本次只新增组合示例和集成测试，修改示例的 CMake 配置及本文档；无需修改 brpc
+核心源码即可同时启用两种协议。依赖上一轮已实现的 HTTP proxy 和 SOCKS5 协议。
+组合集成测试覆盖可配置 SOCKS5 握手及 HTTP 请求超时，详情见 mixed_smoke_test.py。
+组合测试还覆盖内建网页和静态资源访问、两个 Server 同时停止以及工具端口占用时的启动回滚。
+本地组合集成测试 35/35 通过。
+
 ### 自定义回显示例与 curl
 
 对 `socks5_custom_service` 执行 `curl --http0.9 --socks5 ... http://baidu.com/`
@@ -169,7 +322,7 @@ Close，以及 set_user_data/user_data。用户状态使用 shared_ptr<void> 保
   修改请求数据不改变框架所统计的原始待处理字节数，额外分配由用户管理。
 - 连接关闭不会自动替用户调用 done。异步任务必须在失败或取消后也完成；
   Server::Join 等待未完成任务，不能在本连接的 Process 中调用 Server::Join。
-- 框架保留 InputMessageBase 到 done 完成，客户端和默认上游均启用 EOF 延迟，
+- 框架保留任务及 Socket 引用到 done 完成，客户端和默认上游均启用 EOF 延迟，
   避免 EOF 抢先清理尚未处理的数据。这不等同于完整的双向 TCP 半关闭。
 
 完整的自行处理示例见本目录 `custom_server.cpp`；异步处理、顺序及停止等待
@@ -178,34 +331,75 @@ Close，以及 set_user_data/user_data。用户状态使用 shared_ptr<void> 保
 ## 实现结构
 
 ```text
-brpc::Server → Protocol(socks5) → ParseSocks5Message
-                                  ↓ InputMessageBase
-                                ProcessSocks5Request
-                                  ↓ 串行会话任务（bthread）
-                              Socks5Service::Process（用户可覆盖）
-                                  ↓ 默认实现
-客户端 Socket ←→ Socks5Session ←→ 上游 brpc::Socket
-                                      ↑ InputMessenger 字节流 handler
+客户端 Socket → ParseSocks5Message → ExecutionQueue → Socks5Service::Process
+                                                        ↓ 默认 DATA 实现
+                                                  ProxyUpstream::OnClientData
+                                                        ↓
+                                                  WriteUpstream → 上游
+
+上游 Socket → ParseUpstreamData → ExecutionQueue → OnUpstreamData → WriteClient
+自定义上游  → ProxyTunnel::Receive ───────┘
 ```
 
-握手在 parse 中解析并返回消息。解析阶段按连接串行推进；处理回调可能并发，
-因此解析时先按顺序预留任务位置，process_request 标记任务可执行并调度串行 drain。
-连接尚未完成时，业务数据保留在队列中。上游通过 InputMessenger::Create 和
-SocketOptions::connect_on_create 建立，成功后先发送 SOCKS5 响应，再转发数据。
+解析完成后直接通过 `TcpTunnel::Submit()` 提交完整处理函数，按解析顺序执行。
+复用 bthread::ExecutionQueue 的单消费者调度，不再维护 Action、派发消息、ready
+标记或手写 drain。Connect、客户端数据和上游数据共用队列，保证握手回复先于数据。
+普通 HTTP 正向代理仍使用原有 HTTP 解析和服务派发流程。
 
-Socket.parsing_context 保存共享 Session。数据使用 IOBuf::cutn 转移，避免
-IOBuf→string 复制；两侧发送都使用 Socket::Write，并等待实际写入完成。
-上游原始字节流 handler 只是转发适配，不需要注册另一个全局协议。
+数据使用 IOBuf::cutn 转移，避免 IOBuf→string 复制；发送使用 Socket::Write。
+Submit 在消费输入前检查关闭状态和积压上限，失败不消费数据。任务持有输入 Socket
+的 PostponeEOF/CheckEOF 保护及客户端 Socket 引用，直到处理或异步 done 完成；
+因此 EOF 不会丢失尾部数据，Acceptor::Join 也会等待未完成任务。
 
-Socket::NotifyOnFailed 关联两侧关闭。上游启用 defer_eof，已解析消息保留到
-其数据写出后再 Destroy，避免收到数据后紧接着 EOF 时丢失尾部数据。
-客户端首次解析时同样启用延迟 EOF，异步处理器的 done 完成后才释放消息。
+默认上游 `ParseUpstreamData(IOBuf*, Socket*, bool)` 直接提交数据并返回
+MakeMessage(nullptr)，不再创建 UpstreamDataMessage，也没有 Process/Dispatch 阶段。
+用户处理上游协商帧时仍可返回 NOT_ENOUGH_DATA 或消费帧后返回空消息；负载数据
+委托基类处理。Socket 参数供调度入口保留 EOF 保护；自定义传输继续使用 Receive。
+
+会话与上游适配器的关系如下，HTTP CONNECT 使用相同结构：
+
+```text
+Socks5Session / HttpProxySession（继承 TcpTunnel）
+    │ shared_ptr：持有该连接的一个上游适配器
+    ▼
+ProxyUpstream（用户可覆盖的上游处理）
+    │ 持有客户端操作句柄
+    ▼
+ProxyTunnel ── weak_ptr ──→ 原会话
+```
+
+`TcpTunnel` 是内部会话，管理客户端 Socket、任务顺序和关闭状态；
+`ProxyUpstream` 是上游适配器，管理上游连接与数据处理；`ProxyTunnel` 是公开的
+客户端操作句柄，提供 Receive、WriteClient、Close 等操作。它不拥有另一条连接，
+也不延长会话生命周期，因此不会与会话持有的适配器形成强引用环。
+
+协议处理 CONNECT 时仅调用 `TcpTunnel::CreateUpstream()`：创建句柄、调用用户
+factory、将适配器存入会话，随后才调用适配器的 Connect。原来的
+`ProxyTunnelAccess::Bind()` 和 `AttachUpstream()` 已删除。默认 Socket 的读取回调
+从会话取得同一个适配器，不再维护单独的 owner 绑定。处理中的回调临时持有
+适配器的 shared_ptr；会话关闭后拒绝取得新适配器，并取消正在进行的上游操作。
+
+Socket::NotifyOnFailed 关联两侧关闭。上游启用 defer_eof，输入 Socket 的 EOF 保护保留到
+其数据写出后再释放，避免收到数据后紧接着 EOF 时丢失尾部数据。
+客户端首次解析时同样启用延迟 EOF，异步处理器的 done 完成后才释放任务。
 解析器调用已有的 Socket::fail_me_at_server_stop，与 RTMP 的流式连接一致。
 Server::Stop 通过 Acceptor 使客户端连接失败，失败通知关闭上游并清理会话。
-后台任务持有客户端 Socket 引用，原有 Acceptor::Join 等待引用释放，保证任务
+队列任务持有客户端 Socket 引用，原有 Acceptor::Join 等待引用释放，保证任务
 结束后再返回；Server 中没有 SOCKS5 专用判断或生命周期调用。
 会话状态和运行时注册表均使用 bthread::Mutex，运行时完成等待使用配套的
 bthread::ConditionVariable；网络等待、用户回调及关闭 Socket 均在这些锁外执行。
+
+SOCKS5 和 HTTP CONNECT 的串行队列、Socket 引用、上游创建和双侧清理
+统一使用 `src/brpc/details/tcp_tunnel.{h,cpp}`，连接/写入/失败通知复用
+`src/brpc/details/proxy_socket.{h,cpp}`。METHOD/CONNECT 的报文和用户 Process/done
+接口仍由 SOCKS5 模块处理。HTTP 代理接入及本次原始源码改动列表见
+[HTTP proxy README](../http_proxy/README.md)。
+
+本轮调度简化修改此前新增的代理模块和相关测试。**原始 brpc 源码改动**：
+`src/brpc/policy/http_rpc_protocol.h/.cpp` 抽出接收 HttpContext、Server、Socket 的
+VerifyHttpRequest 重载，供直接调度的 CONNECT 握手复用现有认证；原消息入口委托
+该重载，保留 HTTP/HTTP2 原有认证行为。未修改 Server、Socket、InputMessenger
+或 bthread::ExecutionQueue 的实现。
 
 ## 原始 brpc 源码改动标注
 
@@ -226,7 +420,8 @@ RDMA 的 "RDMA" / "RDM3" magic 在不足 4 字节时也检查已有前缀：不�
 返回 TRY_OTHERS；空输入和匹配的部分前缀仍返回 NOT_ENOUGH_DATA。这样不会阻塞
 3 字节 SOCKS5 方法协商，完整握手及等待 ACK 的处理保持原有流程。
 此前添加的 prefer_initial、SetInitialProtocol 和初始探测索引已移除，
-server.cpp、protocol.h 及 InputMessenger 的三个实现/声明文件不再包含本功能改动。
+此前 SOCKS5 探测对 server.cpp、protocol.h 和 InputMessenger 的改动已移除。
+后续 HTTP proxy 的通用严格白名单改动另见 HTTP proxy README。
 Server 未启用 SOCKS5 时其解析器直接返回 TRY_OTHERS。
 defer_eof 默认关闭，原有 EOF 行为保持不变。
 

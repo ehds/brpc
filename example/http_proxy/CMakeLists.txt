@@ -16,20 +16,11 @@
 # under the License.
 
 cmake_minimum_required(VERSION 3.16...3.28)
-project(echo_c++ C CXX)
-set(CMAKE_CXX_STANDARD 17)
+project(http_proxy C CXX)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BrpcExample.cmake)
-
-option(LINK_SO "Whether examples are linked dynamically" OFF)
-
+option(LINK_SO "Link dynamically" OFF)
 brpc_example_find_common_deps(DYNAMIC_LIB)
-
-protobuf_generate_cpp(PROTO_SRC PROTO_HEADER echo.proto)
-
-add_executable(echo_client client.cpp ${PROTO_SRC} ${PROTO_HEADER})
-brpc_example_configure_target(echo_client)
-add_executable(echo_server server.cpp ${PROTO_SRC} ${PROTO_HEADER})
-brpc_example_configure_target(echo_server)
-
-target_link_libraries(echo_client PRIVATE ${BRPC_LIB} ${DYNAMIC_LIB})
-target_link_libraries(echo_server PRIVATE ${BRPC_LIB} ${DYNAMIC_LIB})
+add_executable(http_proxy server.cpp)
+brpc_example_configure_target(http_proxy)
+target_include_directories(http_proxy BEFORE PRIVATE ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(http_proxy PRIVATE ${BRPC_LIB} ${DYNAMIC_LIB})

@@ -1198,8 +1198,20 @@ FindMethodPropertyByURI(const std::string& uri_path, const Server* server,
     return nullptr;
 }
 
-ParseResult ParseHttpMessage(butil::IOBuf *source, Socket *socket,
+namespace {
+HttpContext* NewHttpContext(Socket* socket) {
+    return new HttpContext(socket->is_read_progressive(), socket->http_request_method());
+}
+}  // namespace
+
+ParseResult ParseHttpMessage(butil::IOBuf* source, Socket* socket,
                              bool read_eof, const void* arg) {
+    return ParseHttpMessageWithContext(source, socket, read_eof, arg, NewHttpContext);
+}
+
+ParseResult ParseHttpMessageWithContext(butil::IOBuf* source, Socket* socket,
+                                        bool read_eof, const void* arg,
+                                        HttpContext* (*new_context)(Socket*)) {
     HttpContext* http_imsg = 
         static_cast<HttpContext*>(socket->parsing_context());
     if (http_imsg == nullptr) {
@@ -1213,8 +1225,7 @@ ParseResult ParseHttpMessage(butil::IOBuf *source, Socket *socket,
             //    source is likely to be empty.
             return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         }
-        http_imsg = new HttpContext(socket->is_read_progressive(),
-                                    socket->http_request_method());
+        http_imsg = new_context(socket);
         http_imsg->SetSocketId(socket->id());
         // Parsing http is costly, parsing an incomplete http message from the
         // beginning repeatedly should be avoided, otherwise the cost may reach
@@ -1408,10 +1419,11 @@ static void SendUnauthorizedResponse(const std::string& user_error_text, Socket*
 }
 
 bool VerifyHttpRequest(const InputMessageBase* msg) {
-    Server* server = (Server*)msg->arg();
-    Socket* socket = msg->socket();
-    
-    HttpContext* http_request = (HttpContext*)msg;
+    return VerifyHttpRequest(static_cast<const HttpContext*>(msg),
+                             static_cast<const Server*>(msg->arg()), msg->socket());
+}
+
+bool VerifyHttpRequest(const HttpContext* http_request, const Server* server, Socket* socket) {
     const Authenticator* auth = server->options().auth;
     if (nullptr == auth) {
         // Fast pass
@@ -1432,7 +1444,7 @@ bool VerifyHttpRequest(const InputMessageBase* msg) {
     const std::string *authorization 
         = http_request->header().GetHeader(common->AUTHORIZATION);
     if (authorization == nullptr) {
-        SendUnauthorizedResponse(auth->GetUnauthorizedErrorText(), socket, msg);
+        SendUnauthorizedResponse(auth->GetUnauthorizedErrorText(), socket, http_request);
         return false;
     }
     butil::EndPoint user_addr;
@@ -1441,7 +1453,7 @@ bool VerifyHttpRequest(const InputMessageBase* msg) {
     }
     if (auth->VerifyCredential(*authorization, user_addr,
                                socket->mutable_auth_context()) != 0) {
-        SendUnauthorizedResponse(auth->GetUnauthorizedErrorText(), socket, msg);
+        SendUnauthorizedResponse(auth->GetUnauthorizedErrorText(), socket, http_request);
         return false;
     }
 
