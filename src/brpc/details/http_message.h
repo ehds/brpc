@@ -70,6 +70,8 @@ public:
 
     HttpHeader& header() { return _header; }
     const HttpHeader& header() const { return _header; }
+    // Original request-target, before URI normalization (e.g. port parsing).
+    const std::string& request_target() const { return _url; }
     size_t parsed_length() const { return _parsed_length; }
     bool body_too_large() const { return _body_too_large; }
     

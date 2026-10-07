@@ -83,6 +83,7 @@
 #include "brpc/policy/streaming_rpc_protocol.h"
 #include "brpc/policy/mongo_protocol.h"
 #include "brpc/policy/socks5_protocol.h"
+#include "brpc/policy/http_proxy_protocol.h"
 #include "brpc/policy/redis_protocol.h"
 #include "brpc/policy/nshead_mcpack_protocol.h"
 #include "brpc/policy/rtmp_protocol.h"
@@ -588,6 +589,15 @@ static void GlobalInitializeOrDieImpl() {
                                 nullptr, nullptr, nullptr,
                                 CONNECTION_TYPE_SINGLE, "socks5" };
     if (RegisterProtocol(PROTOCOL_SOCKS5, socks5_protocol) != 0) {
+        exit(1);
+    }
+
+    Protocol http_proxy_protocol = { policy::ParseHttpProxyMessage,
+                                    nullptr, nullptr,
+                                    policy::ProcessHttpProxyRequest, nullptr,
+                                    policy::VerifyHttpRequest, nullptr, nullptr,
+                                    CONNECTION_TYPE_SINGLE, "http_proxy" };
+    if (RegisterProtocol(PROTOCOL_HTTP_PROXY, http_proxy_protocol) != 0) {
         exit(1);
     }
 

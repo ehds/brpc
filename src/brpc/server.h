@@ -279,12 +279,19 @@ struct ServerOptions {
 
     // Only enable these protocols, separated by spaces.
     // All names inside must be valid, check protocols name in global.cpp
-    // http/h2 and rdma_handshake are served whatever this field says:
+    // Unless strict_enabled_protocols is true, http/h2 and rdma_handshake
+    // are served whatever this field says:
     // the builtin services are only reachable over http/h2, and
     // rdma_handshake is a transport level handshake dispatching no request.
     // Naming them here is allowed and changes nothing.
     // Default: empty (all protocols)
     std::string enabled_protocols;
+
+    // Honor a nonempty enabled_protocols whitelist without adding http/h2 or
+    // rdma_handshake implicitly. Useful for listeners with a specialized HTTP
+    // entry point. An internal port uses the same whitelist.
+    // Default: false (preserve the implicit builtin/transport protocols)
+    bool strict_enabled_protocols;
 
     // Customize parameters of HTTP2, defined in http2.h
     H2Settings h2_settings;

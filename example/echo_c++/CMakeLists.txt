@@ -17,7 +17,7 @@
 
 cmake_minimum_required(VERSION 3.16...3.28)
 project(echo_c++ C CXX)
-
+set(CMAKE_CXX_STANDARD 17)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BrpcExample.cmake)
 
 option(LINK_SO "Whether examples are linked dynamically" OFF)
