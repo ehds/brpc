@@ -44,6 +44,8 @@ namespace brpc {
 namespace policy {
 
 struct Socks5Session : details::TcpTunnel {
+    // Parse order: method negotiation -> CONNECT request -> raw tunnel bytes.
+    // REJECTED discards input while the queued failure reply closes the socket.
     enum ParseStage { GREETING, REQUEST, BYTES, REJECTED } parse_stage = GREETING;
     bool connected = false;
     bool method_replied = false;
@@ -225,12 +227,18 @@ static void* WatchHandshake(void* arg) {
     return nullptr;
 }
 
+// SOCKS5 wire format: https://www.rfc-editor.org/rfc/rfc1928.html#section-3
+// GREETING: VER(1) | NMETHODS(1) | METHODS(NMETHODS)
+// REQUEST:  VER(1) | CMD(1) | RSV(1) | ATYP(1) | DST.ADDR | DST.PORT(2)
+// This implementation accepts method 0x00 (no authentication) and CMD 0x01
+// (CONNECT). Incomplete handshake frames remain in source for the next read.
 ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const void* arg) {
     const auto* server = static_cast<const Server*>(arg);
     if (!server || !server->options().socks5_service) return MakeParseError(PARSE_ERROR_TRY_OTHERS);
     if (source->empty()) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
     auto* ctx = static_cast<Socks5Context*>(socket->parsing_context());
     if (!ctx) {
+        // Probe VER=0x05 only before claiming the connection for SOCKS5.
         unsigned char first;
         source->copy_to(&first, 1);
         if (first != 5) return MakeParseError(PARSE_ERROR_TRY_OTHERS);
@@ -248,10 +256,12 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
     // Only the Socket's serialized parser accesses parse_stage.
     auto request = std::make_shared<Socks5Request>();
     unsigned char error_code = 0;
+    // Largest handshake: domain CONNECT, 4 + 1 + 255 + 2 = 262 bytes.
     unsigned char bytes[262];
     size_t available = std::min(source->size(), sizeof(bytes));
     source->copy_to(bytes, available);
     if (s->parse_stage == Socks5Session::GREETING) {
+        // Read NMETHODS first, then wait for all method identifiers.
         if (available < 2) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         size_t size = 2 + bytes[1];
         if (available < size) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
@@ -269,15 +279,19 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
     if (s->parse_stage == Socks5Session::REQUEST) {
         if (available < 4) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
         request->type = Socks5Request::CONNECT;
+        // Validate VER=05, RSV=00, CMD=01 and ATYP. Failure REP values:
+        // 01 = general failure, 07 = unsupported command, 08 = unsupported address.
         if (bytes[0] != 5 || bytes[2] != 0) error_code = 1;
         else if (bytes[1] != 1) error_code = 7;
         else if (bytes[3] != 1 && bytes[3] != 3 && bytes[3] != 4) error_code = 8;
         size_t size = 4;
         if (!error_code) {
             request->address_type = bytes[3];
+            // ATYP: 01 = IPv4 (4 bytes), 04 = IPv6 (16 bytes), 03 = domain.
             size_t length = bytes[3] == 1 ? 4 : 16;
             size_t offset = 4;
             if (bytes[3] == 3) {
+                // The length byte precedes domain bytes; no trailing NUL on wire.
                 if (available < 5) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
                 length = bytes[4];
                 offset = 5;
@@ -292,8 +306,11 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
                 inet_ntop(bytes[3] == 1 ? AF_INET : AF_INET6, bytes + offset, host, sizeof(host));
                 request->host = host;
             }
+            // DST.PORT is the final two bytes, in network byte order (big endian).
             request->port = (uint16_t(bytes[size - 2]) << 8) | bytes[size - 1];
         }
+        // BYTES means CONNECT was parsed, not that the upstream is ready.
+        // The serial queue keeps subsequent data behind the CONNECT task.
         s->parse_stage = error_code ? Socks5Session::REJECTED : Socks5Session::BYTES;
         return Enqueue(socket, source, size, s, request, error_code);
     }
@@ -302,6 +319,8 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
         source->clear();
         return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
     }
+    // After the handshake there are no SOCKS5 data headers; forward the entire
+    // chunk, including payload coalesced with CONNECT in the same TCP read.
     request->type = Socks5Request::DATA;
     return Enqueue(socket, source, source->size(), s, request);
 }

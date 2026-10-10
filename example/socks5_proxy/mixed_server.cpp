@@ -22,8 +22,10 @@
 #include <memory>
 #include "bthread/bthread.h"
 #include "brpc/http_proxy.h"
+#include "brpc/controller.h"
 #include "brpc/server.h"
 #include "brpc/socks5.h"
+#include "mixed_server.h"
 
 DEFINE_string(admin_address, "127.0.0.1:8080",
               "Independent brpc builtin-tools HTTP server listen address");
@@ -62,13 +64,27 @@ public:
 private:
     brpc::ProxyTarget _endpoint;
 };
+
+// A custom upstream can support tunnels without ordinary HTTP forwarding.
+class ConnectOnlyService : public brpc::HttpProxyService {
+public:
+    explicit ConnectOnlyService(const brpc::HttpProxyOptions& options)
+        : HttpProxyService(options) {}
+    void Forward(brpc::Controller* controller,
+                 google::protobuf::Closure* done) override {
+        controller->http_response().set_status_code(brpc::HTTP_STATUS_METHOD_NOT_ALLOWED);
+        controller->response_attachment().append("Use HTTP CONNECT or SOCKS5\n");
+        done->Run();
+    }
+};
 }
 
-int main(int argc, char** argv) {
+int RunProxyServer(int argc, char** argv,
+                   const brpc::ProxyUpstreamFactory& upstream_factory,
+                   bool connect_only) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, Stop);
     signal(SIGTERM, Stop);
-    GFLAGS_NAMESPACE::ParseCommandLineFlags(&argc, &argv, true);
     if (argc > 2) {
         std::cerr << "Usage: " << argv[0]
                   << " [listen_address] [--admin_address=host:port]"
@@ -82,12 +98,19 @@ int main(int argc, char** argv) {
     brpc::HttpProxyOptions http_options;
     http_options.connect_timeout_ms = FLAGS_connect_timeout_ms;
     http_options.request_timeout_ms = FLAGS_request_timeout_ms;
+    socks5_options.upstream_factory = upstream_factory;
+    http_options.upstream_factory = upstream_factory;
     if (!socks5_options.IsValid() || !http_options.IsValid()) {
         std::cerr << "Connect, handshake and request timeouts must be positive"
                   << std::endl;
         return 1;
     }
     if (!FLAGS_upstream_host.empty() || FLAGS_upstream_port != 0) {
+        if (upstream_factory) {
+            std::cerr << "upstream_host/upstream_port cannot override a custom upstream"
+                      << std::endl;
+            return 1;
+        }
         if (FLAGS_upstream_host.empty() || FLAGS_upstream_port <= 0 ||
             FLAGS_upstream_port > 65535) {
             std::cerr << "Specify upstream_host and a valid upstream_port together"
@@ -108,8 +131,10 @@ int main(int argc, char** argv) {
     brpc::Server admin_server;
     brpc::ServerOptions options;
     options.socks5_service = std::make_shared<brpc::Socks5Service>(socks5_options);
-    options.http_master_service = brpc::NewHttpProxyMasterService(
-        std::make_shared<brpc::HttpProxyService>(http_options));
+    std::shared_ptr<brpc::HttpProxyService> http_service = connect_only
+        ? std::make_shared<ConnectOnlyService>(http_options)
+        : std::make_shared<brpc::HttpProxyService>(http_options);
+    options.http_master_service = brpc::NewHttpProxyMasterService(http_service);
     // Both handshakes use this listener. The SOCKS5 version byte is distinct
     // from HTTP methods. After CONNECT, each connection stays in raw TCP mode.
     // Strict selection excludes ordinary http/h2 and late-header protocols.
@@ -136,7 +161,8 @@ int main(int argc, char** argv) {
         server.Join();
         return 1;
     }
-    std::cout << "SOCKS5 and HTTP forward/CONNECT proxy listening on "
+    std::cout << (connect_only ? "SOCKS5 and HTTP CONNECT proxy listening on "
+                              : "SOCKS5 and HTTP forward/CONNECT proxy listening on ")
               << address << "; connect=" << FLAGS_connect_timeout_ms
               << "ms, SOCKS5 handshake=" << FLAGS_handshake_timeout_ms
               << "ms, HTTP request=" << FLAGS_request_timeout_ms
@@ -151,3 +177,10 @@ int main(int argc, char** argv) {
     admin_server.Join();
     return options.socks5_service->session_count() == 0 ? 0 : 1;
 }
+
+#ifndef BRPC_PROXY_EXAMPLE_NO_MAIN
+int main(int argc, char** argv) {
+    GFLAGS_NAMESPACE::ParseCommandLineFlags(&argc, &argv, true);
+    return RunProxyServer(argc, argv, {}, false);
+}
+#endif
