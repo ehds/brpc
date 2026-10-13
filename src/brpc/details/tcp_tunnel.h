@@ -38,7 +38,7 @@ struct TcpTunnel : std::enable_shared_from_this<TcpTunnel> {
     bool closed = false;
     size_t pending_bytes = 0;
     // Set before exposing the session to readers.
-    size_t max_pending_bytes = 1024 * 1024;
+    size_t max_pending_bytes = static_cast<size_t>(2) * 1024 * 1024 * 1024;
     SocketId client = INVALID_SOCKET_ID;
 
     // Submit a complete processing function in parse order. Consume size bytes
