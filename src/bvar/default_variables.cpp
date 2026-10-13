@@ -28,6 +28,7 @@
 #if defined(__APPLE__)
 #include <libproc.h>
 #include <sys/resource.h>
+#include <mach/mach.h>
 #else
 #endif
 

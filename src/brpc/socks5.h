@@ -45,6 +45,11 @@ struct Socks5Request {
     std::string host;
     uint16_t port = 0;
     butil::IOBuf data;
+    // SOCKS4/4a skips METHOD and starts with CONNECT. Address types still use
+    // SOCKS5 values: 1 for IPv4 and 3 for a domain.
+    unsigned char version = 5;
+    // SOCKS4/4a CONNECT metadata; the default service does not authenticate it.
+    std::string user_id;
 };
 
 // Copyable handle. Copies may outlive a callback; operations fail after close.
@@ -55,9 +60,12 @@ public:
     bool is_closed() const;
     // This implementation supports method 0 (no authentication) or 255
     // (reject). Selecting method 0 requires it to have been offered.
+    // Returns false on a SOCKS4/4a connection, which has no METHOD negotiation.
     bool ReplyMethod(unsigned char method) const;
     // Reply exactly once to CONNECT. A nonzero result closes the connection
     // after sending; success enables DATA handling and stops the handshake timer.
+    // Use SOCKS5 result codes (0..8) for either version. SOCKS4/4a maps zero to
+    // granted (0x5a) and nonzero to rejected (0x5b), with an 8-byte wire reply.
     bool ReplyConnect(unsigned char code,
                       const butil::EndPoint& bound = butil::EndPoint()) const;
     bool Write(butil::IOBuf* data) const;
@@ -79,6 +87,9 @@ struct Socks5Options {
     size_t max_pending_bytes = 1024 * 1024;
     int handshake_timeout_ms = 10000;
     int connect_timeout_ms = 3000;
+    // Accept SOCKS4 IPv4 and SOCKS4a domain CONNECT on the same listener.
+    // The registered protocol/service names remain socks5 for compatibility.
+    bool enable_socks4 = false;
 
     bool IsValid() const {
         return max_pending_bytes != 0 && handshake_timeout_ms > 0 &&
@@ -86,7 +97,8 @@ struct Socks5Options {
     }
 };
 
-// Server-side, no-authentication SOCKS5 TCP CONNECT service. Explicitly opt in
+// Server-side, no-authentication SOCKS TCP CONNECT service (SOCKS5 by default,
+// SOCKS4/4a when enabled in Socks5Options). Explicitly opt in
 // with ServerOptions::socks5_service. Like other protocol services, it needs no
 // explicit Start/Stop/Join. A service may be shared by multiple Servers.
 class Socks5Service : public std::enable_shared_from_this<Socks5Service> {
@@ -94,6 +106,7 @@ public:
     explicit Socks5Service(const Socks5Options& options = Socks5Options());
     virtual ~Socks5Service();
     size_t session_count() const;
+    const Socks5Options& options() const;
 
     // Override to handle METHOD, CONNECT and DATA, or delegate selected requests
     // to Socks5Service::Process for the default TCP proxy behavior. Owned by
@@ -103,6 +116,8 @@ public:
     // Calls on one connection are serialized through done, while different
     // connections may run concurrently. Asynchronous handlers must arrange
     // completion themselves; Server::Join waits for their completion.
+    // With SOCKS4 enabled, request->version distinguishes the handshake and
+    // callbacks start with CONNECT, then DATA; no METHOD callback is issued.
     virtual void Process(Socks5Connection* connection, Socks5Request* request,
                          google::protobuf::Closure* done);
 

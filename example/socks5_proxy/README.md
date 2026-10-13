@@ -479,3 +479,27 @@ protobuf@21。所有这些设置都位于本地 CMake 缓存，没有写入源�
   实际为 277644。这 3 项平台相关断言未修改，未宣称完整回归全部通过。
 - 本机构建 WITH_RDMA=OFF，验证覆盖 TCP fallback 路径；RDMA 模式的同样前缀
   改动尚未在启用 RDMA 的构建及硬件上验证。
+
+## SOCKS4/4a compatibility
+
+The registered protocol name and service class remain `socks5` and
+`Socks5Service`. Enable the additional handshakes explicitly:
+
+```cpp
+brpc::Socks5Options socks_options;
+socks_options.enable_socks4 = true;
+server_options.socks5_service =
+    std::make_shared<brpc::Socks5Service>(socks_options);
+```
+
+SOCKS4 IPv4 and SOCKS4a domain CONNECT share the existing upstream factory,
+TcpTunnel queue, backpressure and shutdown handling. Custom handlers receive
+CONNECT then DATA, without METHOD; `request->version` is 4 and CONNECT carries
+`request->user_id`. USERID is metadata, not authenticated by the default service.
+`ReplyConnect` accepts the same 0..8 result codes as SOCKS5 and serializes an
+8-byte SOCKS4 reply (0x5a success, 0x5b failure). Each NUL-terminated USERID/domain
+field is limited to 255 bytes. BIND is unsupported.
+
+```sh
+curl --socks4a 127.0.0.1:1080 https://example.com
+```

@@ -50,6 +50,7 @@ class Socks5Test : public testing::Test {
 protected:
     void SetUp() override {
         brpc::Socks5Options settings;
+        settings.enable_socks4 = enable_socks4;
         settings.max_pending_bytes = 64;
         settings.handshake_timeout_ms = 100;
         service = std::make_shared<ParserService>(settings);
@@ -77,6 +78,7 @@ protected:
         ASSERT_TRUE(result.is_ok());
         EXPECT_EQ(nullptr, result.message());  // Parsing submits processing directly.
     }
+    bool enable_socks4 = false;
     brpc::Server server;
     std::shared_ptr<ParserService> service;
     brpc::SocketId id = brpc::INVALID_SOCKET_ID;
@@ -127,6 +129,62 @@ TEST_F(Socks5Test, ProbeDoesNotConsumeOtherProtocols) {
     EXPECT_EQ(brpc::PARSE_ERROR_TRY_OTHERS, Parse().error());
     EXPECT_EQ(5u, input.size());
     EXPECT_EQ(nullptr, socket->parsing_context());
+}
+
+TEST_F(Socks5Test, Socks4RequiresExplicitOptIn) {
+    input.append("\x04\x01\x01\xbb\x00\x00\x00\x01\0", 9);
+    input.append("alive.github.com", 16);
+    input.append("\0", 1);
+    const std::string before = input.to_string();
+    EXPECT_EQ(brpc::PARSE_ERROR_TRY_OTHERS, Parse().error());
+    EXPECT_EQ(before, input.to_string());
+    EXPECT_EQ(nullptr, socket->parsing_context());
+}
+
+class Socks4ParserTest : public Socks5Test {
+protected:
+    void SetUp() override {
+        enable_socks4 = true;
+        Socks5Test::SetUp();
+    }
+};
+
+TEST_F(Socks4ParserTest, FragmentedDomainAndCoalescedData) {
+    const std::string wire = std::string("\x04\x01\x01\xbb\0\0\0\1", 8) +
+                             std::string("user\0alive.github.com\0", 22);
+    for (size_t i = 0; i + 1 < wire.size(); ++i) {
+        input.append(wire.data() + i, 1);
+        EXPECT_EQ(brpc::PARSE_ERROR_NOT_ENOUGH_DATA, Parse().error());
+        EXPECT_EQ(i + 1, input.size());
+    }
+    input.append(wire.data() + wire.size() - 1, 1);
+    input.append("hello", 5);
+    ConsumeMessage(Parse());
+    EXPECT_EQ("hello", input.to_string());
+    ConsumeMessage(Parse());
+    EXPECT_TRUE(input.empty());
+}
+
+TEST_F(Socks4ParserTest, MaximumLengthFields) {
+    input.append("\x04\x01\0\x50\0\0\0\1", 8);
+    input.append(std::string(255, 'u'));
+    EXPECT_EQ(brpc::PARSE_ERROR_NOT_ENOUGH_DATA, Parse().error());
+    input.append("\0", 1);
+    input.append(std::string(255, 'a'));
+    EXPECT_EQ(brpc::PARSE_ERROR_NOT_ENOUGH_DATA, Parse().error());
+    input.append("\0", 1);
+    ConsumeMessage(Parse());
+    EXPECT_TRUE(input.empty());
+}
+
+TEST_F(Socks4ParserTest, PayloadLimitStillApplies) {
+    input.append("\x04\x01\0\x50\x7f\0\0\1\0", 9);
+    ConsumeMessage(Parse());
+    input.append(std::string(64, 'x'));
+    ConsumeMessage(Parse());
+    input.append("y", 1);
+    EXPECT_EQ(brpc::PARSE_ERROR_TOO_BIG_DATA, Parse().error());
+    EXPECT_EQ(0u, service->session_count());
 }
 
 TEST_F(Socks5Test, FragmentedAndCoalescedFrames) {
@@ -288,6 +346,8 @@ TEST(Socks5OptionsTest, DisabledByDefault) {
 
 class EchoService : public brpc::Socks5Service {
 public:
+    explicit EchoService(const brpc::Socks5Options& options = brpc::Socks5Options())
+        : Socks5Service(options) {}
     bool reject_method = false;
     bool reject_connect = false;
 
@@ -327,6 +387,8 @@ protected:
 
 class AsyncEchoService : public EchoService {
 public:
+    explicit AsyncEchoService(const brpc::Socks5Options& options = brpc::Socks5Options())
+        : EchoService(options) {}
     std::atomic<int> data_calls{0};
     std::atomic<bool> released{false};
     bthread::CountdownEvent gate;
@@ -417,6 +479,251 @@ protected:
     std::shared_ptr<brpc::Socks5Service> service;
     std::shared_ptr<AsyncEchoService> async;
 };
+
+static brpc::Socks5Options Socks4Options() {
+    brpc::Socks5Options options;
+    options.enable_socks4 = true;
+    return options;
+}
+
+class MetadataEchoService : public EchoService {
+public:
+    MetadataEchoService() : EchoService(Socks4Options()) {}
+    unsigned char version = 0;
+    std::string user_id;
+    std::atomic<bool> method_rejected{false};
+    void Process(brpc::Socks5Connection* connection, brpc::Socks5Request* request,
+                 google::protobuf::Closure* done) override {
+        if (request->type == brpc::Socks5Request::CONNECT) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                version = request->version;
+                user_id = request->user_id;
+            }
+            method_rejected = !connection->ReplyMethod(0);
+        }
+        EchoService::Process(connection, request, done);
+    }
+    void CheckMetadata(unsigned char expected_version, const std::string& expected_user) {
+        std::lock_guard<std::mutex> lock(mutex);
+        EXPECT_EQ(expected_version, version);
+        EXPECT_EQ(expected_user, user_id);
+        EXPECT_TRUE(method_rejected.load());
+    }
+};
+
+class CustomSocks4Test : public CustomSocks5Test {
+protected:
+    std::string Request(bool domain = true, const std::string& user = "user") {
+        return std::string(domain ? "\x04\x01\x04\xd2\0\0\0\1"
+                                  : "\x04\x01\x04\xd2\x7f\0\0\1", 8) +
+               user + std::string("\0", 1) +
+               (domain ? "example.test" + std::string("\0", 1) : "");
+    }
+    void SendRequest(const std::string& request) {
+        ASSERT_EQ(static_cast<ssize_t>(request.size()),
+                  send(client, request.data(), request.size(), 0));
+    }
+    void ReadReply(unsigned char result = 0x5a) {
+        unsigned char reply[8];
+        ASSERT_EQ(8, recv(client, reply, sizeof(reply), MSG_WAITALL));
+        EXPECT_EQ(0, reply[0]);
+        EXPECT_EQ(result, reply[1]);
+    }
+    void ExpectClosed() {
+        char byte;
+        EXPECT_EQ(0, recv(client, &byte, 1, 0));
+    }
+};
+
+TEST_F(CustomSocks4Test, DomainHandshakeAndPayloadReuseCustomService) {
+    auto echo = std::make_shared<MetadataEchoService>();
+    Start(echo);
+    SendRequest(Request() + "hello");
+    ReadReply();
+    const std::string expected = "example.test:1234:hello";
+    std::string reply(expected.size(), '\0');
+    ASSERT_EQ(static_cast<ssize_t>(reply.size()),
+              recv(client, &reply[0], reply.size(), MSG_WAITALL));
+    EXPECT_EQ(expected, reply);
+    echo->CheckMetadata(4, "user");
+    const std::vector<brpc::Socks5Request::Type> calls = {
+        brpc::Socks5Request::CONNECT, brpc::Socks5Request::DATA
+    };
+    EXPECT_EQ(calls, echo->calls());
+}
+
+TEST_F(CustomSocks4Test, NumericAddressAndEmptyUserId) {
+    auto echo = std::make_shared<MetadataEchoService>();
+    Start(echo);
+    SendRequest(Request(false, "") + "hello");
+    ReadReply();
+    const std::string expected = "127.0.0.1:1234:hello";
+    std::string reply(expected.size(), '\0');
+    ASSERT_EQ(static_cast<ssize_t>(reply.size()),
+              recv(client, &reply[0], reply.size(), MSG_WAITALL));
+    EXPECT_EQ(expected, reply);
+    echo->CheckMetadata(4, "");
+}
+
+TEST_F(CustomSocks4Test, FragmentedFieldTerminators) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    Start(echo);
+    const auto request = Request();
+    for (size_t i = 0; i + 1 < request.size(); ++i) {
+        ASSERT_EQ(1, send(client, request.data() + i, 1, 0));
+        unsigned char reply;
+        EXPECT_EQ(-1, recv(client, &reply, 1, MSG_DONTWAIT));
+    }
+    SendRequest(request.substr(request.size() - 1));
+    ReadReply();
+}
+
+TEST_F(CustomSocks4Test, UnsupportedBindIsRejected) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    Start(echo);
+    auto request = Request();
+    request[1] = 2;
+    SendRequest(request + "discard");
+    ReadReply(0x5b);
+    ExpectClosed();
+    EXPECT_TRUE(echo->calls().empty());
+}
+
+TEST_F(CustomSocks4Test, OversizedUserIdIsRejectedWithoutTerminator) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    Start(echo);
+    SendRequest(Request(false).substr(0, 8) + std::string(256, 'x'));
+    ReadReply(0x5b);
+    ExpectClosed();
+    EXPECT_TRUE(echo->calls().empty());
+}
+
+TEST_F(CustomSocks4Test, OversizedHostnameIsRejectedWithoutTerminator) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    Start(echo);
+    SendRequest(Request().substr(0, 8) + std::string("\0", 1) + std::string(256, 'x'));
+    ReadReply(0x5b);
+    ExpectClosed();
+    EXPECT_TRUE(echo->calls().empty());
+}
+
+TEST_F(CustomSocks4Test, EmptyHostnameIsRejected) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    Start(echo);
+    SendRequest(Request().substr(0, 8) + std::string("\0\0", 2));
+    ReadReply(0x5b);
+    ExpectClosed();
+    EXPECT_TRUE(echo->calls().empty());
+}
+
+TEST_F(CustomSocks4Test, ConnectFailureDropsCoalescedPayload) {
+    auto echo = std::make_shared<EchoService>(Socks4Options());
+    echo->reject_connect = true;
+    Start(echo);
+    SendRequest(Request() + "discard");
+    ReadReply(0x5b);
+    ExpectClosed();
+    EXPECT_EQ(1u, echo->calls().size());
+}
+
+TEST_F(CustomSocks4Test, DefaultConnectMapsUpstreamFailureToSocks4Reply) {
+    class FailedUpstream : public brpc::ProxyUpstream {
+    public:
+        explicit FailedUpstream(const brpc::ProxyTunnel& tunnel) : ProxyUpstream(tunnel) {}
+        void Connect(const brpc::ProxyConnectRequest&, ConnectDone done) override {
+            brpc::ProxyConnectResult result;
+            result.error = ECONNREFUSED;
+            done(result);
+        }
+    };
+    auto options = Socks4Options();
+    options.upstream_factory = [](const brpc::ProxyTunnel& tunnel) {
+        return std::unique_ptr<brpc::ProxyUpstream>(new FailedUpstream(tunnel));
+    };
+    Start(std::make_shared<brpc::Socks5Service>(options));
+    SendRequest(Request() + "discard");
+    ReadReply(0x5b);
+    ExpectClosed();
+}
+
+TEST_F(CustomSocks4Test, Ipv6BoundEndpointStillHasAnEightByteReply) {
+    class BoundService : public brpc::Socks5Service {
+    public:
+        BoundService() : Socks5Service(Socks4Options()) {}
+        void Process(brpc::Socks5Connection* connection, brpc::Socks5Request* request,
+                     google::protobuf::Closure* done) override {
+            brpc::ClosureGuard guard(done);
+            if (request->type == brpc::Socks5Request::CONNECT) {
+                butil::EndPoint bound;
+                ASSERT_EQ(0, butil::str2endpoint("[::1]:1234", &bound));
+                connection->ReplyConnect(0, bound);
+            } else {
+                connection->Write(&request->data);
+            }
+        }
+    };
+    Start(std::make_shared<BoundService>());
+    SendRequest(Request() + "tail");
+    ReadReply();
+    char reply[4];
+    ASSERT_EQ(4, recv(client, reply, sizeof(reply), MSG_WAITALL));
+    EXPECT_EQ("tail", std::string(reply, 4));
+}
+
+TEST_F(CustomSocks4Test, AsyncPayloadSurvivesClientEof) {
+    async = std::make_shared<AsyncEchoService>(Socks4Options());
+    Start(async);
+    SendRequest(Request() + "tail");
+    ReadReply();
+    WaitForData();
+    ASSERT_EQ(0, shutdown(client, SHUT_WR));
+    async->Release();
+    char reply[4];
+    ASSERT_EQ(4, recv(client, reply, 4, MSG_WAITALL));
+    EXPECT_EQ("tail", std::string(reply, 4));
+    ExpectClosed();
+}
+
+TEST_F(CustomSocks4Test, IncompleteHandshakeTimesOut) {
+    auto settings = Socks4Options();
+    settings.handshake_timeout_ms = 30;
+    auto echo = std::make_shared<EchoService>(settings);
+    Start(echo);
+    SendRequest(Request().substr(0, 8) + "partial");
+    ExpectClosed();
+}
+
+TEST_F(CustomSocks4Test, DelegatesDomainConnectToDefaultUpstream) {
+    brpc::Server upstream;
+    ASSERT_EQ(0, upstream.Start("127.0.0.1:0", nullptr));
+    class RedirectService : public brpc::Socks5Service {
+    public:
+        RedirectService() : Socks5Service(Socks4Options()) {}
+        int port = 0;
+        void Process(brpc::Socks5Connection* connection, brpc::Socks5Request* request,
+                     google::protobuf::Closure* done) override {
+            if (request->type == brpc::Socks5Request::CONNECT) {
+                request->host = "127.0.0.1";
+                request->port = port;
+            }
+            Socks5Service::Process(connection, request, done);
+        }
+    };
+    auto redirect = std::make_shared<RedirectService>();
+    redirect->port = upstream.listen_address().port;
+    Start(redirect);
+    SendRequest(Request() + "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    ReadReply();
+    char reply[12];
+    ASSERT_EQ(12, recv(client, reply, sizeof(reply), MSG_WAITALL));
+    EXPECT_EQ("HTTP/1.1 200", std::string(reply, 12));
+    client.reset(-1);
+    server.Stop(0);
+    server.Join();
+    upstream.Stop(0);
+    upstream.Join();
+}
 
 TEST_F(CustomSocks5Test, CustomConnectDataAndPerConnectionState) {
     auto echo = std::make_shared<EchoService>();

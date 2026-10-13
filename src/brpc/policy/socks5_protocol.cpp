@@ -44,9 +44,10 @@ namespace brpc {
 namespace policy {
 
 struct Socks5Session : details::TcpTunnel {
-    // Parse order: method negotiation -> CONNECT request -> raw tunnel bytes.
+    // SOCKS5: METHOD -> CONNECT -> raw bytes; SOCKS4/4a: CONNECT -> raw bytes.
     // REJECTED discards input while the queued failure reply closes the socket.
     enum ParseStage { GREETING, REQUEST, BYTES, REJECTED } parse_stage = GREETING;
+    unsigned char version = 5;  // Set by the parser before submitting any work.
     bool connected = false;
     bool method_replied = false;
     bool connect_replied = false;
@@ -103,8 +104,8 @@ static int Written(bthread_id_t id, void* arg, int error) {
     return bthread_id_unlock_and_destroy(id);
 }
 
-static bool Result(const std::shared_ptr<Socks5Session>& s,
-                   unsigned char code, const butil::EndPoint* bound = nullptr) {
+static bool ResultSocks5(const std::shared_ptr<Socks5Session>& s,
+                         unsigned char code, const butil::EndPoint* bound = nullptr) {
     unsigned char reply[22] = {5, code, 0, 1};
     size_t size = 10;
     if (bound) {
@@ -128,6 +129,32 @@ static bool Result(const std::shared_ptr<Socks5Session>& s,
     butil::IOBuf data;
     data.append(reply, size);
     return s->WriteClient(&data);
+}
+
+static bool ResultSocks4(const std::shared_ptr<Socks5Session>& s,
+                         unsigned char code, const butil::EndPoint* bound) {
+    unsigned char reply[8] = {0, static_cast<unsigned char>(code ? 0x5b : 0x5a)};
+    if (bound && code == 0) {
+        sockaddr_storage address = {};
+        socklen_t length = 0;
+        if (butil::endpoint2sockaddr(*bound, &address, &length) != 0) return false;
+        if (address.ss_family == AF_INET) {
+            const auto* a = reinterpret_cast<const sockaddr_in*>(&address);
+            memcpy(reply + 2, &a->sin_port, 2);
+            memcpy(reply + 4, &a->sin_addr, 4);
+        }
+        // CONNECT clients ignore the address fields. Leave them zero when the
+        // actual upstream's bound endpoint is IPv6, which SOCKS4 cannot encode.
+    }
+    butil::IOBuf data;
+    data.append(reply, sizeof(reply));
+    return s->WriteClient(&data);
+}
+
+static bool Result(const std::shared_ptr<Socks5Session>& s,
+                   unsigned char code, const butil::EndPoint* bound = nullptr) {
+    return s->version == 4 ? ResultSocks4(s, code, bound)
+                           : ResultSocks5(s, code, bound);
 }
 
 // The client destination is logical input to the adapter. Connect may establish
@@ -227,38 +254,80 @@ static void* WatchHandshake(void* arg) {
     return nullptr;
 }
 
-// SOCKS5 wire format: https://www.rfc-editor.org/rfc/rfc1928.html#section-3
-// GREETING: VER(1) | NMETHODS(1) | METHODS(NMETHODS)
-// REQUEST:  VER(1) | CMD(1) | RSV(1) | ATYP(1) | DST.ADDR | DST.PORT(2)
-// This implementation accepts method 0x00 (no authentication) and CMD 0x01
-// (CONNECT). Incomplete handshake frames remain in source for the next read.
-ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const void* arg) {
-    const auto* server = static_cast<const Server*>(arg);
-    if (!server || !server->options().socks5_service) return MakeParseError(PARSE_ERROR_TRY_OTHERS);
-    if (source->empty()) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
-    auto* ctx = static_cast<Socks5Context*>(socket->parsing_context());
-    if (!ctx) {
-        // Probe VER=0x05 only before claiming the connection for SOCKS5.
-        unsigned char first;
-        source->copy_to(&first, 1);
-        if (first != 5) return MakeParseError(PARSE_ERROR_TRY_OTHERS);
-        // Like RTMP, this is a streaming connection. Use Acceptor's existing
-        // failure path on Server::Stop instead of a protocol-specific hook.
-        socket->fail_me_at_server_stop();
-        socket->EnableDeferredEOF();
-        auto s = server->options().socks5_service->NewSession(socket->id());
-        if (!s) return MakeParseError(PARSE_ERROR_NO_RESOURCE);
-        ctx = new Socks5Context(s);
-        socket->reset_parsing_context(ctx);
-        WatchFailure(socket->id(), s);
+enum class Socks4FieldResult { READY, INCOMPLETE, TOO_LONG };
+
+static Socks4FieldResult ReadSocks4Field(
+        const unsigned char* bytes, size_t available, size_t* offset,
+        std::string* field) {
+    const size_t max_length = 255;
+    if (*offset > available) return Socks4FieldResult::INCOMPLETE;
+    const size_t count = std::min(available - *offset, max_length + 1);
+    const auto* end = static_cast<const unsigned char*>(
+        memchr(bytes + *offset, 0, count));
+    if (!end) {
+        return count == max_length + 1 ? Socks4FieldResult::TOO_LONG
+                                      : Socks4FieldResult::INCOMPLETE;
     }
-    auto s = ctx->session;
-    // Only the Socket's serialized parser accesses parse_stage.
+    const size_t length = end - (bytes + *offset);
+    field->assign(reinterpret_cast<const char*>(bytes + *offset), length);
+    *offset += length + 1;
+    return Socks4FieldResult::READY;
+}
+
+// SOCKS4: VER | CMD | PORT(2) | IPv4(4) | USERID | NUL.
+// SOCKS4a adds HOST | NUL when IPv4 is 0.0.0.x, x != 0. USERID is metadata.
+static ParseResult ParseSocks4Handshake(
+        butil::IOBuf* source, Socket* socket,
+        const std::shared_ptr<Socks5Session>& s) {
+    // Both NUL-terminated fields are limited to 255 bytes each. Do not consume
+    // an incomplete handshake, and leave bytes after its last NUL as payload.
+    unsigned char bytes[8 + 256 + 256];
+    const size_t available = std::min(source->size(), sizeof(bytes));
+    if (available < 8) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
+    source->copy_to(bytes, available);
+    auto request = std::make_shared<Socks5Request>();
+    request->type = Socks5Request::CONNECT;
+    request->version = 4;
+    request->port = (uint16_t(bytes[2]) << 8) | bytes[3];
+    unsigned char error_code = bytes[0] != 4 ? 1 : (bytes[1] != 1 ? 7 : 0);
+    size_t size = 8;
+    if (!error_code) {
+        const auto field = ReadSocks4Field(bytes, available, &size, &request->user_id);
+        if (field == Socks4FieldResult::INCOMPLETE) {
+            return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
+        }
+        if (field == Socks4FieldResult::TOO_LONG) error_code = 1;
+    }
+    if (!error_code) {
+        const bool domain = bytes[4] == 0 && bytes[5] == 0 &&
+                            bytes[6] == 0 && bytes[7] != 0;
+        request->address_type = domain ? 3 : 1;
+        if (domain) {
+            const auto field = ReadSocks4Field(bytes, available, &size, &request->host);
+            if (field == Socks4FieldResult::INCOMPLETE) {
+                return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
+            }
+            if (field == Socks4FieldResult::TOO_LONG || request->host.empty()) {
+                error_code = 8;
+            }
+        } else {
+            char host[INET_ADDRSTRLEN];
+            if (!inet_ntop(AF_INET, bytes + 4, host, sizeof(host))) error_code = 8;
+            else request->host = host;
+        }
+    }
+    s->parse_stage = error_code ? Socks5Session::REJECTED : Socks5Session::BYTES;
+    return Enqueue(socket, source, size, s, request, error_code);
+}
+
+static ParseResult ParseSocks5Handshake(
+        butil::IOBuf* source, Socket* socket,
+        const std::shared_ptr<Socks5Session>& s) {
     auto request = std::make_shared<Socks5Request>();
     unsigned char error_code = 0;
-    // Largest handshake: domain CONNECT, 4 + 1 + 255 + 2 = 262 bytes.
+    // Largest SOCKS5 request: 4 + 1 + 255 + 2 = 262 bytes.
     unsigned char bytes[262];
-    size_t available = std::min(source->size(), sizeof(bytes));
+    const size_t available = std::min(source->size(), sizeof(bytes));
     source->copy_to(bytes, available);
     if (s->parse_stage == Socks5Session::GREETING) {
         // Read NMETHODS first, then wait for all method identifiers.
@@ -314,13 +383,55 @@ ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const
         s->parse_stage = error_code ? Socks5Session::REJECTED : Socks5Session::BYTES;
         return Enqueue(socket, source, size, s, request, error_code);
     }
+    return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
+}
+
+// SOCKS5 wire format: https://www.rfc-editor.org/rfc/rfc1928.html#section-3
+// GREETING: VER(1) | NMETHODS(1) | METHODS(NMETHODS)
+// REQUEST:  VER(1) | CMD(1) | RSV(1) | ATYP(1) | DST.ADDR | DST.PORT(2)
+// This implementation accepts method 0x00 (no authentication) and CMD 0x01
+// (CONNECT). Incomplete handshake frames remain in source for the next read.
+ParseResult ParseSocks5Message(butil::IOBuf* source, Socket* socket, bool, const void* arg) {
+    const auto* server = static_cast<const Server*>(arg);
+    if (!server || !server->options().socks5_service) return MakeParseError(PARSE_ERROR_TRY_OTHERS);
+    if (source->empty()) return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
+    auto* ctx = static_cast<Socks5Context*>(socket->parsing_context());
+    if (!ctx) {
+        // Both versions have an unambiguous first byte. SOCKS4 is opt-in.
+        unsigned char first;
+        source->copy_to(&first, 1);
+        if (first != 5 &&
+            (first != 4 || !server->options().socks5_service->options().enable_socks4)) {
+            return MakeParseError(PARSE_ERROR_TRY_OTHERS);
+        }
+        // Like RTMP, this is a streaming connection. Use Acceptor's existing
+        // failure path on Server::Stop instead of a protocol-specific hook.
+        socket->fail_me_at_server_stop();
+        socket->EnableDeferredEOF();
+        auto s = server->options().socks5_service->NewSession(socket->id());
+        if (!s) return MakeParseError(PARSE_ERROR_NO_RESOURCE);
+        s->version = first;
+        if (first == 4) s->parse_stage = Socks5Session::REQUEST;
+        ctx = new Socks5Context(s);
+        socket->reset_parsing_context(ctx);
+        WatchFailure(socket->id(), s);
+    }
+    auto s = ctx->session;
+    // Only the Socket's serialized parser accesses parse_stage.
+    if (s->parse_stage == Socks5Session::GREETING ||
+        s->parse_stage == Socks5Session::REQUEST) {
+        return s->version == 4 ? ParseSocks4Handshake(source, socket, s)
+                               : ParseSocks5Handshake(source, socket, s);
+    }
     if (s->parse_stage == Socks5Session::REJECTED) {
         // A rejection reply is queued; do not fail the socket before it is sent.
         source->clear();
         return MakeParseError(PARSE_ERROR_NOT_ENOUGH_DATA);
     }
-    // After the handshake there are no SOCKS5 data headers; forward the entire
-    // chunk, including payload coalesced with CONNECT in the same TCP read.
+    // Both versions become raw TCP streams after CONNECT. Queue coalesced
+    // payload behind CONNECT so no data is forwarded before the success reply.
+    auto request = std::make_shared<Socks5Request>();
+    request->version = s->version;
     request->type = Socks5Request::DATA;
     return Enqueue(socket, source, source->size(), s, request);
 }
@@ -339,7 +450,8 @@ bool Socks5Connection::is_closed() const {
 bool Socks5Connection::ReplyMethod(unsigned char method) const {
     {
         std::lock_guard<bthread::Mutex> lock(_session->mutex);
-        if (_session->closed || _session->method_replied) return false;
+        if (_session->closed || _session->version != 5 ||
+            _session->method_replied) return false;
         if (method != 255 && (method != 0 ||
             std::find(_session->offered_methods.begin(), _session->offered_methods.end(),
                       method) == _session->offered_methods.end())) return false;
@@ -356,7 +468,8 @@ bool Socks5Connection::ReplyMethod(unsigned char method) const {
 bool Socks5Connection::ReplyConnect(unsigned char code, const butil::EndPoint& bound) const {
     {
         std::lock_guard<bthread::Mutex> lock(_session->mutex);
-        if (_session->closed || !_session->method_replied ||
+        if (_session->closed ||
+            (_session->version == 5 && !_session->method_replied) ||
             _session->connect_replied || code > 8) return false;
         _session->connect_replied = true;
     }
@@ -456,6 +569,8 @@ std::shared_ptr<policy::Socks5Session> Socks5Service::NewSession(uint64_t socket
     task.release();
     return s;
 }
+
+const Socks5Options& Socks5Service::options() const { return _runtime->options; }
 
 size_t Socks5Service::session_count() const {
     std::lock_guard<bthread::Mutex> runtime_lock(_runtime->mutex);
