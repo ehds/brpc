@@ -1,7 +1,8 @@
-# SOCKS5 protocol example
+# SOCKS4/4a/5 protocol example
 
-正式的 brpc 服务端协议扩展：无认证 SOCKS5 TCP CONNECT，支持 IPv4、IPv6、
-域名目标及双向字节转发。两侧网络读写都由 brpc 管理。
+正式的 brpc 服务端协议扩展：SOCKS4 IPv4 CONNECT、SOCKS4a 域名 CONNECT 和
+无认证 SOCKS5 TCP CONNECT（IPv4、IPv6、域名），支持双向字节转发。
+三个示例均启用 SOCKS4/4a/5，两侧网络读写都由 brpc 管理。
 
 ## 构建与运行
 
@@ -22,6 +23,8 @@ cmake --build example/socks5_proxy/build --clean-first -j6
 
 ```sh
 python3 -m http.server 8000 --bind 127.0.0.1
+curl --noproxy "" --socks4 127.0.0.1:1080 http://127.0.0.1:8000/
+curl --noproxy "" --socks4a 127.0.0.1:1080 http://localhost:8000/
 curl --noproxy "" --socks5-hostname 127.0.0.1:1080 http://localhost:8000/
 ```
 
@@ -40,11 +43,11 @@ python3 example/socks5_proxy/smoke_test.py \
   example/socks5_proxy/build/socks5_custom_service
 ```
 
-## 同一 Server、同一端口支持 HTTP CONNECT 与 SOCKS5
+## 同一 Server、同一端口支持 HTTP CONNECT 与 SOCKS4/4a/5
 
 构建会同时生成 `socks5_http_proxy`，源码为 `mixed_server.cpp`。代理 Server 在同一
-端口上处理两个协议，并支持普通 HTTP 正向代理；同一进程另外启动一个独立
-brpc Server，提供原有内建网页工具。
+端口上处理 SOCKS4/4a/5 和 HTTP CONNECT，并支持普通 HTTP 正向代理；同一进程
+另外启动一个独立 brpc Server，提供原有内建网页工具。
 
 ```sh
 ./example/socks5_proxy/build/socks5_http_proxy 127.0.0.1:1080
@@ -54,7 +57,7 @@ brpc Server，提供原有内建网页工具。
 
 组合示例默认同时监听：
 
-- `127.0.0.1:1080`：SOCKS5、HTTP CONNECT 和普通 HTTP 代理。
+- `127.0.0.1:1080`：SOCKS4/4a/5、HTTP CONNECT 和普通 HTTP 代理。
 - `127.0.0.1:8080`：brpc 内建网页工具，普通 HTTP/h2 协议，无代理 master service。
 
 浏览器直接打开 `http://127.0.0.1:8080/`。常用页面包括 `/status`、`/vars`、
@@ -84,9 +87,9 @@ Server 自身；独立 Server 不会自动列出代理 Server 的所有入站隧
 | 参数 | 默认值 | 作用 |
 |---|---|---|
 | `--admin_address` | `127.0.0.1:8080` | 独立网页工具 Server 的监听地址 |
-| `--upstream_host` / `--upstream_port` | 空 / 0 | 可选固定实际上游；两者一起设置，仅作用于 SOCKS5 和 HTTP CONNECT |
-| `--connect_timeout_ms` | 15000 毫秒 | SOCKS5、HTTP CONNECT 及普通 HTTP 转发到上游的 TCP 建连等待 |
-| `--handshake_timeout_ms` | 30000 毫秒 | SOCKS5 整个握手，包括等待客户端报文和连接上游 |
+| `--upstream_host` / `--upstream_port` | 空 / 0 | 可选固定实际上游；两者一起设置，仅作用于 SOCKS4/4a/5 和 HTTP CONNECT |
+| `--connect_timeout_ms` | 15000 毫秒 | SOCKS4/4a/5、HTTP CONNECT 及普通 HTTP 转发到上游的 TCP 建连等待 |
+| `--handshake_timeout_ms` | 30000 毫秒 | SOCKS4/4a/5 整个握手，包括等待客户端报文和连接上游 |
 | `--request_timeout_ms` | 30000 毫秒 | 普通 HTTP 转发的整个请求，包括 TCP 建连和等待响应 |
 | `--idle_timeout_sec` | 60 秒 | 客户端连接空闲超时；小于等于 0 时关闭空闲检查 |
 
@@ -123,6 +126,7 @@ CONNECT；普通 HTTP 不加 `--proxytunnel` 时走正向转发。
 #include "brpc/socks5.h"
 
 brpc::Socks5Options socks5_options;
+socks5_options.enable_socks4 = true;
 socks5_options.connect_timeout_ms = 15000;
 socks5_options.handshake_timeout_ms = 30000;
 brpc::HttpProxyOptions http_options;
@@ -483,7 +487,9 @@ protobuf@21。所有这些设置都位于本地 CMake 缓存，没有写入源�
 ## SOCKS4/4a compatibility
 
 The registered protocol name and service class remain `socks5` and
-`Socks5Service`. Enable the additional handshakes explicitly:
+`Socks5Service`. All three example binaries enable SOCKS4/4a on their existing
+listener: `socks5_proxy`, `socks5_custom_service`, and `socks5_http_proxy`.
+Other applications can enable the additional handshakes explicitly:
 
 ```cpp
 brpc::Socks5Options socks_options;
@@ -500,6 +506,11 @@ CONNECT then DATA, without METHOD; `request->version` is 4 and CONNECT carries
 8-byte SOCKS4 reply (0x5a success, 0x5b failure). Each NUL-terminated USERID/domain
 field is limited to 255 bytes. BIND is unsupported.
 
+SOCKS4 takes an IPv4 target, so curl resolves a hostname locally. SOCKS4a sends
+the hostname to the proxy, where the upstream implementation handles it.
+The existing binary names and `enabled_protocols = "socks5"` remain unchanged.
+
 ```sh
-curl --socks4a 127.0.0.1:1080 https://example.com
+curl --noproxy "" --socks4 127.0.0.1:1080 http://127.0.0.1:8000/
+curl --noproxy "" --socks4a 127.0.0.1:1080 http://localhost:8000/
 ```

@@ -30,14 +30,14 @@
 DEFINE_string(admin_address, "127.0.0.1:8080",
               "Independent brpc builtin-tools HTTP server listen address");
 DEFINE_string(upstream_host, "",
-              "Optional actual TCP upstream host for both tunnel protocols");
+              "Optional actual TCP upstream host for SOCKS and HTTP CONNECT");
 DEFINE_int32(upstream_port, 0,
              "Actual TCP upstream port; use with upstream_host");
 DEFINE_int32(connect_timeout_ms, 15000,
-             "Upstream TCP connect timeout for SOCKS5 and HTTP proxy, "
+             "Upstream TCP connect timeout for SOCKS and HTTP proxy, "
              "in milliseconds");
 DEFINE_int32(handshake_timeout_ms, 30000,
-             "Entire SOCKS5 handshake timeout, including upstream connect, "
+             "Entire SOCKS handshake timeout, including upstream connect, "
              "in milliseconds");
 DEFINE_int32(request_timeout_ms, 30000,
              "Entire ordinary HTTP forwarding timeout, including connect, "
@@ -73,7 +73,7 @@ public:
     void Forward(brpc::Controller* controller,
                  google::protobuf::Closure* done) override {
         controller->http_response().set_status_code(brpc::HTTP_STATUS_METHOD_NOT_ALLOWED);
-        controller->response_attachment().append("Use HTTP CONNECT or SOCKS5\n");
+        controller->response_attachment().append("Use HTTP CONNECT or SOCKS4/4a/SOCKS5\n");
         done->Run();
     }
 };
@@ -93,6 +93,7 @@ int RunProxyServer(int argc, char** argv,
         return 1;
     }
     brpc::Socks5Options socks5_options;
+    socks5_options.enable_socks4 = true;
     socks5_options.connect_timeout_ms = FLAGS_connect_timeout_ms;
     socks5_options.handshake_timeout_ms = FLAGS_handshake_timeout_ms;
     brpc::HttpProxyOptions http_options;
@@ -135,7 +136,7 @@ int RunProxyServer(int argc, char** argv,
         ? std::make_shared<ConnectOnlyService>(http_options)
         : std::make_shared<brpc::HttpProxyService>(http_options);
     options.http_master_service = brpc::NewHttpProxyMasterService(http_service);
-    // Both handshakes use this listener. The SOCKS5 version byte is distinct
+    // SOCKS4/4a, SOCKS5 and HTTP share this listener. SOCKS version bytes differ
     // from HTTP methods. After CONNECT, each connection stays in raw TCP mode.
     // Strict selection excludes ordinary http/h2 and late-header protocols.
     options.enabled_protocols = "socks5 http_proxy";
@@ -161,10 +162,10 @@ int RunProxyServer(int argc, char** argv,
         server.Join();
         return 1;
     }
-    std::cout << (connect_only ? "SOCKS5 and HTTP CONNECT proxy listening on "
-                              : "SOCKS5 and HTTP forward/CONNECT proxy listening on ")
+    std::cout << (connect_only ? "SOCKS4/4a, SOCKS5 and HTTP CONNECT proxy listening on "
+                              : "SOCKS4/4a, SOCKS5 and HTTP forward/CONNECT proxy listening on ")
               << address << "; connect=" << FLAGS_connect_timeout_ms
-              << "ms, SOCKS5 handshake=" << FLAGS_handshake_timeout_ms
+              << "ms, SOCKS handshake=" << FLAGS_handshake_timeout_ms
               << "ms, HTTP request=" << FLAGS_request_timeout_ms
               << "ms, idle=" << FLAGS_idle_timeout_sec << "s" << std::endl;
     std::cout << "brpc builtin tools: http://"

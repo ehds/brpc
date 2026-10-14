@@ -35,14 +35,16 @@ int main(int argc, char** argv) {
     const char* address = argc > 1 ? argv[1] : "127.0.0.1:1080";
     brpc::Server server;
     brpc::ServerOptions options;
-    options.socks5_service = std::make_shared<brpc::Socks5Service>();
+    brpc::Socks5Options socks_options;
+    socks_options.enable_socks4 = true;
+    options.socks5_service = std::make_shared<brpc::Socks5Service>(socks_options);
     // Select the listener's protocols explicitly: late-header protocols such
     // as nshead cannot exclude a three-byte SOCKS5 greeting by its prefix.
     options.enabled_protocols = "socks5";
     options.idle_timeout_sec = 30;
     options.max_connections = 128;
     if (server.Start(address, &options) != 0) return 1;
-    std::cout << "SOCKS5 protocol listening on " << address << std::endl;
+    std::cout << "SOCKS4/4a and SOCKS5 proxy listening on " << address << std::endl;
     while (!stopping) bthread_usleep(50000);
     server.Stop(0);
     server.Join();

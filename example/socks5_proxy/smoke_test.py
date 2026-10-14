@@ -17,7 +17,7 @@
 # under the License.
 #
 #
-"""Local integration tests; starts the demo and an HTTP/echo upstream."""
+"""Local SOCKS4/4a/5 tests; starts the demo and an HTTP/echo upstream."""
 import concurrent.futures
 import http.server
 import os
@@ -39,6 +39,12 @@ def exact(sock, count):
             raise EOFError("unexpected EOF")
         data += chunk
     return data
+
+
+def socks4_request(port, domain=False, command=1, user_id=b"", host=b"localhost"):
+    address = b"\0\0\0\1" if domain else socket.inet_aton("127.0.0.1")
+    request = bytes([4, command]) + struct.pack("!H", port) + address + user_id + b"\0"
+    return request + host + b"\0" if domain else request
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -115,6 +121,52 @@ class Tests(unittest.TestCase):
         s.sendall(self.request(port, domain))
         self.assertEqual(self.reply(s), 0)
 
+    def socks4_reply(self, s, code=0x5a):
+        reply = exact(s, 8)
+        self.assertEqual(reply[:2], bytes([0, code]))
+
+    def socks4_handshake(self, s, port, domain=False):
+        s.sendall(socks4_request(port, domain))
+        self.socks4_reply(s)
+
+    def test_socks4_and_socks4a_bidirectional_transfer(self):
+        for domain in (False, True):
+            with self.subTest(domain=domain), self.client() as s:
+                self.socks4_handshake(s, self.echo.server_address[1], domain)
+                data = os.urandom(512 * 1024)
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    received = pool.submit(exact, s, len(data))
+                    s.sendall(data)
+                    self.assertEqual(received.result(timeout=10), data)
+
+    def test_socks4_fragmented_handshake_and_coalesced_payload(self):
+        for domain in (False, True):
+            with self.subTest(domain=domain), self.client() as s:
+                request = socks4_request(self.echo.server_address[1], domain,
+                                         user_id=b"demo-user")
+                for byte in request[:-1]:
+                    s.sendall(bytes([byte]))
+                    time.sleep(.005)
+                s.sendall(request[-1:] + b"early payload")
+                self.socks4_reply(s)
+                self.assertEqual(exact(s, 13), b"early payload")
+
+    def test_socks4_reject_bind(self):
+        for domain in (False, True):
+            with self.subTest(domain=domain), self.client() as s:
+                s.sendall(socks4_request(80, domain, command=2))
+                self.socks4_reply(s, 0x5b)
+                self.assertEqual(s.recv(1), b"")
+
+    def test_socks4_connect_failure(self):
+        with socket.socket() as unused:
+            unused.bind(("127.0.0.1", 0))
+            for domain in (False, True):
+                with self.subTest(domain=domain), self.client() as s:
+                    s.sendall(socks4_request(unused.getsockname()[1], domain) + b"discard")
+                    self.socks4_reply(s, 0x5b)
+                    self.assertEqual(s.recv(1), b"")
+
     def test_fragmented_handshake_and_coalesced_payload(self):
         s = self.client()
         for byte in b"\x05\x02\x02\x00":
@@ -177,6 +229,16 @@ class Tests(unittest.TestCase):
                     s.sendall(payload)
                     self.assertEqual(exact(s, len(payload)), payload)
                     self.assertIsNone(process.poll())
+                # All SOCKS versions use the same custom CONNECT/DATA handler.
+                # This logical destination need not have a listening upstream.
+                for domain in (False, True):
+                    with self.subTest(domain=domain), \
+                            socket.create_connection(("127.0.0.1", port), 5) as client:
+                        client.sendall(socks4_request(9, domain) + b"custom echo")
+                        self.socks4_reply(client)
+                        self.assertEqual(exact(client, 11), b"custom echo")
+                        client.sendall(b"second exchange")
+                        self.assertEqual(exact(client, 15), b"second exchange")
                 process.terminate()
                 self.assertEqual(process.wait(timeout=5), 0)
                 self.assertEqual(s.recv(1), b"")
@@ -305,12 +367,16 @@ class Tests(unittest.TestCase):
         self.assertIn(b"200 OK", response.split(b"\r\n", 1)[0])
 
     def test_curl_http(self):
-        result = subprocess.run([
-            "curl", "--fail", "--silent", "--show-error", "--max-time", "5",
-            "--noproxy", "", "--socks5-hostname", f"127.0.0.1:{self.port}",
-            f"http://localhost:{self.http.server_address[1]}/"],
-            capture_output=True, check=True)
-        self.assertEqual(result.stdout, b"socks5-demo-ok\n")
+        for option in ("--socks4", "--socks4a", "--socks5-hostname"):
+            with self.subTest(option=option):
+                host = "127.0.0.1" if option == "--socks4" else "localhost"
+                result = subprocess.run([
+                    "curl", "--fail", "--silent", "--show-error", "--max-time", "5",
+                    "--noproxy", "", option, f"127.0.0.1:{self.port}",
+                    f"http://{host}:{self.http.server_address[1]}/"],
+                    capture_output=True, timeout=7)
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                self.assertEqual(result.stdout, b"socks5-demo-ok\n")
 
     def test_multiple_connections(self):
         def exchange(i):

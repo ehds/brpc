@@ -17,7 +17,7 @@
 # under the License.
 #
 #
-"""SOCKS5 and HTTP proxy on one Server/listener; reuses both smoke suites."""
+"""SOCKS4/4a/5 and HTTP proxy on one listener; reuses both smoke suites."""
 import concurrent.futures
 import contextlib
 import http.client
@@ -55,11 +55,18 @@ http_smoke.proxy_process = proxy_process
 
 
 class Tests(http_smoke.Tests):
-    # The parent's fixture starts one combined proxy for HTTP and SOCKS5 tests.
-    # Reuse the SOCKS5 helpers and cases compatible with that same fixture.
+    # The parent's fixture starts one combined proxy for HTTP and SOCKS tests.
+    # Reuse the SOCKS helpers and cases compatible with that same fixture.
     handshake = socks5_smoke.Tests.handshake
     request = socks5_smoke.Tests.request
     reply = socks5_smoke.Tests.reply
+    socks4_reply = socks5_smoke.Tests.socks4_reply
+    socks4_handshake = socks5_smoke.Tests.socks4_handshake
+    test_socks4_and_socks4a_bidirectional_transfer = (
+        socks5_smoke.Tests.test_socks4_and_socks4a_bidirectional_transfer)
+    test_socks4_fragmented_handshake_and_coalesced_payload = (
+        socks5_smoke.Tests.test_socks4_fragmented_handshake_and_coalesced_payload)
+    test_socks4_reject_bind = socks5_smoke.Tests.test_socks4_reject_bind
     test_socks5_fragmented_handshake = (
         socks5_smoke.Tests.test_fragmented_handshake_and_coalesced_payload)
     test_socks5_domain_and_large_transfer = (
@@ -92,17 +99,22 @@ class Tests(http_smoke.Tests):
         with self.short_connect_deadline():
             socks5_smoke.Tests.test_connect_failure(self)
 
-    def test_curl_socks5_http_and_https(self):
+    def test_socks4_connect_failure(self):
+        with self.short_connect_deadline():
+            socks5_smoke.Tests.test_socks4_connect_failure(self)
+
+    def test_curl_socks_http_and_https(self):
         for tls in (False, True):
-            with self.subTest(tls=tls):
-                args = ["curl", "--fail", "--silent", "--show-error", "--max-time", "5",
-                        "--noproxy", "", "--socks5-hostname", f"127.0.0.1:{self.port}"]
-                if tls:
-                    args.append("--insecure")  # Repository's loopback test certificate.
-                result = subprocess.run(args + [self.url(tls=tls)],
-                                        capture_output=True, timeout=7)
-                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-                self.assertEqual(result.stdout, http_smoke.BODY)
+            for option in ("--socks4", "--socks4a", "--socks5-hostname"):
+                with self.subTest(tls=tls, option=option):
+                    args = ["curl", "--fail", "--silent", "--show-error", "--max-time", "5",
+                            "--noproxy", "", option, f"127.0.0.1:{self.port}"]
+                    if tls:
+                        args.append("--insecure")  # Repository's loopback test certificate.
+                    result = subprocess.run(args + [self.url(tls=tls)],
+                                            capture_output=True, timeout=7)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    self.assertEqual(result.stdout, http_smoke.BODY)
 
     def test_concurrent_protocols_on_the_same_port(self):
         barrier = threading.Barrier(16)
@@ -110,15 +122,19 @@ class Tests(http_smoke.Tests):
 
         def exchange(index):
             with socket.create_connection(("127.0.0.1", self.port), 5) as client:
-                if index % 2:
+                protocol = index % 4
+                if protocol == 0:
+                    self.connect(client, port)
+                    # SOCKS-looking bytes inside HTTP CONNECT stay raw too.
+                    prefix = b"\x05\x01\x00"
+                elif protocol == 1:
                     self.handshake(client, port)
-                    # HTTP-looking bytes inside SOCKS5 must stay raw tunnel data.
+                    # HTTP-looking bytes inside SOCKS must stay raw tunnel data.
                     prefix = b"CONNECT example.invalid:443 HTTP/1.1\r\n\r\n"
                 else:
-                    self.connect(client, port)
-                    # A SOCKS5-looking prefix inside HTTP CONNECT stays raw too.
-                    prefix = b"\x05\x01\x00"
-                barrier.wait(timeout=5)  # Both protocols hold active tunnels together.
+                    self.socks4_handshake(client, port, domain=protocol == 3)
+                    prefix = b"GET / HTTP/1.1\r\n\r\n"
+                barrier.wait(timeout=5)  # All protocols hold active tunnels together.
                 for turn in range(3):
                     payload = prefix + bytes([index, turn]) + os.urandom(32768)
                     client.sendall(payload)
@@ -131,11 +147,15 @@ class Tests(http_smoke.Tests):
         args = ("--upstream_host=127.0.0.1",
                 f"--upstream_port={self.echo.server_address[1]}")
         with http_smoke.proxy_process(args) as (_, port):
-            for protocol in ("socks5", "http"):
+            for protocol in ("socks4", "socks4a", "socks5", "http"):
                 with self.subTest(protocol=protocol), \
                         socket.create_connection(("127.0.0.1", port), 5) as client:
                     host = b"unresolvable.invalid"
-                    if protocol == "socks5":
+                    if protocol in ("socks4", "socks4a"):
+                        client.sendall(socks5_smoke.socks4_request(
+                            1234, domain=protocol == "socks4a", host=host))
+                        self.socks4_reply(client)
+                    elif protocol == "socks5":
                         client.sendall(b"\x05\x01\x00")
                         self.assertEqual(http_smoke.exact(client, 2), b"\x05\x00")
                         client.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) +
@@ -217,13 +237,16 @@ class Tests(http_smoke.Tests):
                 client.settimeout(1)
                 self.assertNotEqual(client.connect_ex(("127.0.0.1", proxy_port)), 0)
 
-    def test_configured_socks5_handshake_timeout(self):
+    def test_configured_socks_handshake_timeout(self):
         with http_smoke.proxy_process(("--connect_timeout_ms=50",
                                       "--handshake_timeout_ms=100")) as (_, port):
-            with socket.create_connection(("127.0.0.1", port), 2) as client:
-                client.sendall(b"\x05")
-                self.assertEqual(client.recv(1), b"")
-            # Expiring one SOCKS5 session leaves HTTP CONNECT on the same server usable.
+            for prefix in (b"\x04", socks5_smoke.socks4_request(80, domain=True)[:-1],
+                           b"\x05"):
+                with self.subTest(prefix=prefix), \
+                        socket.create_connection(("127.0.0.1", port), 2) as client:
+                    client.sendall(prefix)
+                    self.assertEqual(client.recv(1), b"")
+            # Expiring SOCKS sessions leaves HTTP CONNECT on the same server usable.
             with socket.create_connection(("127.0.0.1", port), 2) as client:
                 self.connect(client, self.echo.server_address[1], b"still-live")
                 self.assertEqual(http_smoke.exact(client, 10), b"still-live")
@@ -256,21 +279,30 @@ class Tests(http_smoke.Tests):
             upstream.shutdown()
             upstream.server_close()
 
-    def test_stop_closes_both_protocols_and_partial_handshakes(self):
+    def test_stop_closes_all_protocols_and_partial_handshakes(self):
         # A separate combined proxy lets this test stop it without affecting
         # the shared fixture used by the other protocol tests.
         with http_smoke.proxy_process() as (process, port):
             clients = []
             try:
-                for protocol in ("socks5", "http", "partial-socks5", "partial-http"):
+                for protocol in ("socks4", "socks4a", "socks5", "http",
+                                 "partial-socks4", "partial-socks4a",
+                                 "partial-socks5", "partial-http"):
                     client = socket.create_connection(("127.0.0.1", port), 5)
                     clients.append(client)
-                    if protocol == "socks5":
+                    if protocol in ("socks4", "socks4a"):
+                        self.socks4_handshake(client, self.echo.server_address[1],
+                                              domain=protocol == "socks4a")
+                    elif protocol == "socks5":
                         self.handshake(client, self.echo.server_address[1])
                     elif protocol == "http":
                         self.connect(client, self.echo.server_address[1])
                     elif protocol == "partial-socks5":
                         client.sendall(b"\x05")
+                    elif protocol in ("partial-socks4", "partial-socks4a"):
+                        # Wait for the final USERID/domain NUL, respectively.
+                        client.sendall(socks5_smoke.socks4_request(
+                            80, domain=protocol == "partial-socks4a")[:-1])
                     else:
                         client.sendall(b"C")
                     if protocol.startswith("partial-"):

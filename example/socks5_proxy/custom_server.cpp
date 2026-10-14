@@ -31,6 +31,8 @@ void Stop(int) { stopping = 1; }
 // Authentication negotiation still delegates to the default implementation.
 class EchoService : public brpc::Socks5Service {
 public:
+    explicit EchoService(const brpc::Socks5Options& options) : Socks5Service(options) {}
+
     void Process(brpc::Socks5Connection* connection, brpc::Socks5Request* request,
                  google::protobuf::Closure* done) override {
         if (request->type == brpc::Socks5Request::METHOD) {
@@ -61,12 +63,14 @@ int main(int argc, char** argv) {
     const char* address = argc > 1 ? argv[1] : "127.0.0.1:1081";
     brpc::Server server;
     brpc::ServerOptions options;
-    options.socks5_service = std::make_shared<EchoService>();
+    brpc::Socks5Options socks_options;
+    socks_options.enable_socks4 = true;
+    options.socks5_service = std::make_shared<EchoService>(socks_options);
     options.enabled_protocols = "socks5";
     options.idle_timeout_sec = 30;
     options.max_connections = 128;
     if (server.Start(address, &options) != 0) return 1;
-    std::cout << "Custom SOCKS5 echo service listening on " << address
+    std::cout << "Custom SOCKS4/4a and SOCKS5 echo service listening on " << address
               << " (raw byte echo; no upstream connection or HTTP response)"
               << std::endl;
     while (!stopping) bthread_usleep(50000);
