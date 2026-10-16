@@ -84,6 +84,7 @@ private:
 struct Socks5Options {
     // One adapter per connection; empty selects the default brpc TCP adapter.
     ProxyUpstreamFactory upstream_factory;
+    std::shared_ptr<ProxyTrafficObserver> traffic_observer;
     size_t max_pending_bytes = 1024 * 1024;
     int handshake_timeout_ms = 10000;
     int connect_timeout_ms = 3000;

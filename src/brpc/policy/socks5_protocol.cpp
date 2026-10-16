@@ -477,6 +477,8 @@ bool Socks5Connection::ReplyConnect(unsigned char code, const butil::EndPoint& b
     if (!ok || code != 0) {
         Close();
     } else {
+        _session->EnableTrafficObserver(
+            _session->runtime->options.traffic_observer);
         std::lock_guard<bthread::Mutex> lock(_session->mutex);
         if (_session->closed) return false;
         _session->connected = true;

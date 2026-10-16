@@ -154,6 +154,17 @@ std::shared_ptr<ProxyUpstream> TcpTunnel::GetUpstream() {
     return closed ? nullptr : _upstream;
 }
 
+void TcpTunnel::EnableTrafficObserver(
+        std::shared_ptr<ProxyTrafficObserver> observer) {
+    std::lock_guard<bthread::Mutex> lock(mutex);
+    if (!closed) _traffic_observer = std::move(observer);
+}
+
+std::shared_ptr<ProxyTrafficObserver> TcpTunnel::TrafficObserver() {
+    std::lock_guard<bthread::Mutex> lock(mutex);
+    return _traffic_observer;
+}
+
 bool TcpTunnel::WriteClient(butil::IOBuf* data) {
     SocketId peer;
     {
@@ -161,12 +172,20 @@ bool TcpTunnel::WriteClient(butil::IOBuf* data) {
         if (closed) return false;
         peer = client;
     }
-    return WriteProxyData(peer, data);
+    const size_t bytes = data->size();
+    const bool written = WriteProxyData(peer, data);
+    auto observer = written ? TrafficObserver() : nullptr;
+    if (observer) observer->OnDownload(bytes);
+    return written;
 }
 
 bool TcpTunnel::WriteUpstream(butil::IOBuf* data) {
+    const size_t bytes = data->size();
+    auto observer = TrafficObserver();
     auto peer = GetUpstream();
-    return peer && AwaitProxyData(peer.get(), data, true) == 0;
+    const bool written = peer && AwaitProxyData(peer.get(), data, true) == 0;
+    if (written && observer) observer->OnUpload(bytes);
+    return written;
 }
 
 bool TcpTunnel::ProcessUpstreamData(butil::IOBuf* data) {

@@ -31,6 +31,7 @@ class Controller;
 struct HttpProxyOptions {
     // Applies to CONNECT tunnels. Ordinary HTTP uses the Forward hook.
     ProxyUpstreamFactory upstream_factory;
+    std::shared_ptr<ProxyTrafficObserver> traffic_observer;
     int connect_timeout_ms = 3000;
     int request_timeout_ms = 10000;
     size_t max_pending_bytes = 1024 * 1024;

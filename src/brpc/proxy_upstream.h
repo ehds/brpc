@@ -19,6 +19,7 @@
 #ifndef BRPC_PROXY_UPSTREAM_H
 #define BRPC_PROXY_UPSTREAM_H
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -30,6 +31,17 @@
 namespace brpc {
 namespace details { struct TcpTunnel; }
 class Socket;
+
+// Observes client-facing tunnel payload after proxy negotiation. Upload is
+// counted after the payload is accepted by the selected upstream adapter;
+// download is counted after it is accepted by the client socket. Implementations
+// must not block or throw.
+class ProxyTrafficObserver {
+public:
+    virtual ~ProxyTrafficObserver() = default;
+    virtual void OnUpload(size_t bytes) noexcept = 0;
+    virtual void OnDownload(size_t bytes) noexcept = 0;
+};
 
 struct ProxyTarget {
     std::string host;

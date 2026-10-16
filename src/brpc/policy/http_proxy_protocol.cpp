@@ -141,7 +141,12 @@ butil::Status PrepareHttpProxyConnect(HttpProxyContext *message, Socket *socket,
     }
     const int code = Connect(session, *request);
     auto response = MakeConnectResponse(code);
-    return session->WriteClient(&response) && code == HTTP_STATUS_OK;
+    const bool written = session->WriteClient(&response);
+    if (written && code == HTTP_STATUS_OK) {
+      session->EnableTrafficObserver(
+          session->service->options().traffic_observer);
+    }
+    return written && code == HTTP_STATUS_OK;
   });
 }
 } // namespace
