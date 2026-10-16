@@ -294,6 +294,7 @@ int HttpMessage::OnBody(const char *at, const size_t length) {
         if (length > FLAGS_max_body_size ||
             _body_size > FLAGS_max_body_size - length) {
             _body_too_large = true;
+            _rejected_body_chunk_size = length;
             return -1;
         }
         _body_size += length;

@@ -32,6 +32,9 @@ struct HttpProxyOptions {
     // Applies to CONNECT tunnels. Ordinary HTTP uses the Forward hook.
     ProxyUpstreamFactory upstream_factory;
     std::shared_ptr<ProxyTrafficObserver> traffic_observer;
+    // Reject non-CONNECT requests as soon as their headers are parsed. This
+    // prevents a disabled forward proxy from buffering arbitrary request bodies.
+    bool enable_forward = true;
     int connect_timeout_ms = 3000;
     int request_timeout_ms = 10000;
     size_t max_pending_bytes = 1024 * 1024;

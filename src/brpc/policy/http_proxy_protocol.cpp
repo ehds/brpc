@@ -171,9 +171,23 @@ ParseResult ParseHttpProxyMessage(butil::IOBuf *source, Socket *socket,
   // Shared framing, including fragmented/chunked messages and size limits.
   const ParseResult result = ParseHttpMessageWithContext(
       source, socket, read_eof, arg, NewProxyContext);
+  auto *message = result.message()
+                      ? static_cast<HttpProxyContext *>(result.message())
+                      : static_cast<HttpProxyContext *>(socket->parsing_context());
+  if (!service->options().enable_forward &&
+      !IsInternalPort(*server, socket->local_side()) && message &&
+      message->stage() >= HTTP_ON_HEADERS_COMPLETE &&
+      message->header().method() != HTTP_METHOD_CONNECT) {
+    LOG(WARNING) << "Reject HTTP forwarding request"
+                 << " remote=" << socket->remote_side()
+                 << " method=" << HttpMethod2Str(message->header().method())
+                 << " target=" << message->request_target();
+    if (result.message()) message->Destroy();
+    return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG,
+                          "HTTP forwarding is disabled");
+  }
   if (!result.is_ok() || !result.message())
     return result;
-  auto *message = static_cast<HttpProxyContext *>(result.message());
   if (IsInternalPort(*server, socket->local_side()))
     return result;
   if (message->header().method() == HTTP_METHOD_CONNECT) {

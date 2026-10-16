@@ -73,6 +73,10 @@ public:
     // Original request-target, before URI normalization (e.g. port parsing).
     const std::string& request_target() const { return _url; }
     size_t parsed_length() const { return _parsed_length; }
+    size_t body_size() const { return _body_size; }
+    size_t rejected_body_chunk_size() const {
+        return _rejected_body_chunk_size;
+    }
     bool body_too_large() const { return _body_too_large; }
     
     // Http parser callback functions
@@ -119,6 +123,7 @@ private:
     ProgressiveReader* _body_reader{nullptr};
     butil::IOBuf _body;
     size_t _body_size{0};
+    size_t _rejected_body_chunk_size{0};
     bool _body_too_large{false};
 
     // Store the IOBuf information in `ParseFromIOBuf'

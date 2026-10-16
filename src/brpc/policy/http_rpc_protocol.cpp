@@ -1244,6 +1244,23 @@ ParseResult ParseHttpMessageWithContext(butil::IOBuf* source, Socket* socket,
         rc = http_imsg->ParseFromIOBuf(*source);
     }
     if (rc < 0 && http_imsg->body_too_large()) {
+        const std::string* content_length =
+            http_imsg->header().GetHeader("Content-Length");
+        const std::string* transfer_encoding =
+            http_imsg->header().GetHeader("Transfer-Encoding");
+        LOG(WARNING) << "HTTP body exceeds max_body_size"
+                     << " remote=" << socket->remote_side()
+                     << " method="
+                     << HttpMethod2Str(http_imsg->header().method())
+                     << " target=" << http_imsg->request_target()
+                     << " content_length="
+                     << (content_length ? *content_length : "<unset>")
+                     << " transfer_encoding="
+                     << (transfer_encoding ? *transfer_encoding : "<unset>")
+                     << " received_body_bytes=" << http_imsg->body_size()
+                     << " incoming_body_chunk_bytes="
+                     << http_imsg->rejected_body_chunk_size()
+                     << " max_body_size=" << FLAGS_max_body_size;
         if (socket->CreatedByConnect()) {
             return MakeParseError(PARSE_ERROR_TOO_BIG_DATA);
         }
