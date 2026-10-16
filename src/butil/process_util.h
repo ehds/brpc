@@ -27,7 +27,8 @@
 namespace butil {
 
 // Read command line of this program. If `with_args' is true, args are
-// included and separated with spaces.
+// included. Output uses platform-specific separators, without shell quoting.
+// On macOS, reads the current runtime argc/argv, which the application may modify.
 // Returns length of the command line on success, -1 otherwise.
 // NOTE: `buf' does not end with zero.
 ssize_t ReadCommandLine(char* buf, size_t len, bool with_args);

@@ -20,17 +20,16 @@
 // Date: Wed Apr 11 14:35:56 CST 2018
 
 #include <fcntl.h>                      // open
-#include <stdio.h>                      // snprintf
+#include <string.h>                     // memcpy, strnlen
 #include <sys/types.h>  
 #include <sys/uio.h>
-#include <unistd.h>                     // read, gitpid
-#include <sstream>                      // std::ostringstream
+#include <unistd.h>                     // read, getpid
 #include "butil/fd_guard.h"             // butil::fd_guard
 #include "butil/logging.h"
-#include "butil/popen.h"                // read_command_output
 #include "butil/process_util.h"
 
 #if defined(OS_MACOSX)
+#include <crt_externs.h>                // _NSGetArgc, _NSGetArgv
 #include <libproc.h>                   // proc_pidpath
 #endif
 namespace butil {
@@ -47,22 +46,6 @@ ssize_t ReadCommandLine(char* buf, size_t len, bool with_args) {
         LOG(ERROR) << "Fail to read /proc/self/cmdline";
         return -1;
     }
-#elif defined(OS_MACOSX)
-    static pid_t pid = getpid();
-    std::ostringstream oss;
-    char cmdbuf[32];
-    snprintf(cmdbuf, sizeof(cmdbuf), "ps -p %ld -o command=", (long)pid);
-    if (butil::read_command_output(oss, cmdbuf) != 0) {
-        LOG(ERROR) << "Fail to read cmdline";
-        return -1;
-    }
-    const std::string& result = oss.str();
-    ssize_t nr = std::min(result.size(), len);
-    memcpy(buf, result.data(), nr);
-#else
-    #error Not Implemented
-#endif
-
     if (with_args) {
         if ((size_t)nr == len) {
             return len;
@@ -75,7 +58,6 @@ ssize_t ReadCommandLine(char* buf, size_t len, bool with_args) {
         return nr;
     } else {
         for (ssize_t i = 0; i < nr; ++i) {
-            // The command in macos is separated with space and ended with '\n'
             if (buf[i] == '\0' || buf[i] == '\n' || buf[i] == ' ') {
                 return i;
             }
@@ -86,6 +68,38 @@ ssize_t ReadCommandLine(char* buf, size_t len, bool with_args) {
         }
         return nr;
     }
+#elif defined(OS_MACOSX)
+    const int argc = *_NSGetArgc();
+    char* const* argv = *_NSGetArgv();
+    if (argc <= 0 || !argv || !argv[0]) {
+        LOG(ERROR) << "Fail to read cmdline";
+        return -1;
+    }
+    if (!with_args) {
+        const size_t nr = strnlen(argv[0], len);
+        if (nr == len) {
+            LOG(ERROR) << "buf is not big enough";
+            return -1;
+        }
+        if (nr != 0) memcpy(buf, argv[0], nr);
+        return nr;
+    }
+    size_t nr = 0;
+    // A flag parser may compact argv without updating the runtime argc.
+    for (int i = 0; i < argc && argv[i] && nr < len; ++i) {
+        const size_t size = strnlen(argv[i], len - nr);
+        if (size != 0) memcpy(buf + nr, argv[i], size);
+        nr += size;
+        // Preserve ps's display format without starting a subprocess. Do not
+        // append a NUL; a full buffer returns len, including truncated output.
+        if (nr < len) {
+            buf[nr++] = (i + 1 == argc || !argv[i + 1] ? '\n' : ' ');
+        }
+    }
+    return nr;
+#else
+    #error Not Implemented
+#endif
 }
 
 ssize_t GetProcessAbsolutePath(char *buf, size_t len) {
