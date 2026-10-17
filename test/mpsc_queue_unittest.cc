@@ -138,4 +138,22 @@ TEST(MPSCQueueTest, mpsc_test_allocator) {
     ASSERT_EQ(1, info.item_num);
 }
 
+TEST(MPSCQueueTest, enqueue_move_only) {
+  butil::MPSCQueue<std::unique_ptr<int>> q;
+  q.Enqueue(std::make_unique<int>(1));
+}
+
+
+TEST(MPSCQueueTest, element_lifetime) {
+  std::weak_ptr<int> weak;
+
+  {
+    butil::MPSCQueue<std::shared_ptr<int>> q;
+    std::shared_ptr<int> value = std::make_shared<int>(1);
+    weak = value;
+    q.Enqueue(value);
+    EXPECT_FALSE(weak.expired());
+  }
+  EXPECT_TRUE(weak.expired());
+}
 }
