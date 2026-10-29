@@ -1051,9 +1051,11 @@ HttpResponseSender::~HttpResponseSender() {
     }
 
     if (rc != 0) {
-        // EPIPE is common in pooled connections + backup requests.
+        // The client may close an HTTP connection before its response is ready.
+        // EPIPE is also common in pooled connections + backup requests.
         const int errcode = errno;
-        PLOG_IF(WARNING, errcode != EPIPE) << "Fail to write into " << *socket;
+        PLOG_IF(WARNING, errcode != EPIPE && errcode != EEOF)
+            << "Fail to write into " << *socket;
         cntl->SetFailed(errcode, "Fail to write into %s", socket->description().c_str());
         return;
     }

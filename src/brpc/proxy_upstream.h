@@ -82,6 +82,9 @@ public:
     // by the client application. data must remain alive until done; it may be
     // consumed even on failure. Do not access data after signaling hook completion.
     void WriteClient(butil::IOBuf* data, Done done) const;
+    // Attach a per-tunnel observer. Payload is counted only after the proxy
+    // handshake succeeds, independently of the server-wide observer.
+    bool SetTrafficObserver(std::shared_ptr<ProxyTrafficObserver> observer) const;
     void Close() const;
     bool is_closed() const;
 private:

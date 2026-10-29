@@ -79,6 +79,10 @@ butil::Status TcpTunnel::Submit(Socket* input, butil::IOBuf* source, size_t size
         std::lock_guard<bthread::Mutex> lock(mutex);
         if (closed) return butil::Status(ECANCELED, "Tunnel session is closed");
         if (payload && size > max_pending_bytes - pending_bytes) {
+            LOG(WARNING) << "Proxy tunnel pending byte limit exceeded"
+                         << " pending_bytes=" << pending_bytes
+                         << " incoming_bytes=" << size
+                         << " max_pending_bytes=" << max_pending_bytes;
             error = ENOBUFS;
         } else {
             if (!_queue_started) {
@@ -157,12 +161,25 @@ std::shared_ptr<ProxyUpstream> TcpTunnel::GetUpstream() {
 void TcpTunnel::EnableTrafficObserver(
         std::shared_ptr<ProxyTrafficObserver> observer) {
     std::lock_guard<bthread::Mutex> lock(mutex);
-    if (!closed) _traffic_observer = std::move(observer);
+    if (!closed) {
+        _traffic_observer = std::move(observer);
+        _traffic_enabled = true;
+    }
 }
 
-std::shared_ptr<ProxyTrafficObserver> TcpTunnel::TrafficObserver() {
+bool TcpTunnel::SetConnectionTrafficObserver(
+        std::shared_ptr<ProxyTrafficObserver> observer) {
     std::lock_guard<bthread::Mutex> lock(mutex);
-    return _traffic_observer;
+    if (closed) return false;
+    _connection_traffic_observer = std::move(observer);
+    return true;
+}
+
+std::pair<std::shared_ptr<ProxyTrafficObserver>,
+          std::shared_ptr<ProxyTrafficObserver>> TcpTunnel::TrafficObservers() {
+    std::lock_guard<bthread::Mutex> lock(mutex);
+    return {_traffic_observer,
+            _traffic_enabled ? _connection_traffic_observer : nullptr};
 }
 
 bool TcpTunnel::WriteClient(butil::IOBuf* data) {
@@ -174,17 +191,23 @@ bool TcpTunnel::WriteClient(butil::IOBuf* data) {
     }
     const size_t bytes = data->size();
     const bool written = WriteProxyData(peer, data);
-    auto observer = written ? TrafficObserver() : nullptr;
-    if (observer) observer->OnDownload(bytes);
+    if (written) {
+        auto [observer, connection] = TrafficObservers();
+        if (observer) observer->OnDownload(bytes);
+        if (connection) connection->OnDownload(bytes);
+    }
     return written;
 }
 
 bool TcpTunnel::WriteUpstream(butil::IOBuf* data) {
     const size_t bytes = data->size();
-    auto observer = TrafficObserver();
+    auto [observer, connection] = TrafficObservers();
     auto peer = GetUpstream();
     const bool written = peer && AwaitProxyData(peer.get(), data, true) == 0;
-    if (written && observer) observer->OnUpload(bytes);
+    if (written) {
+        if (observer) observer->OnUpload(bytes);
+        if (connection) connection->OnUpload(bytes);
+    }
     return written;
 }
 

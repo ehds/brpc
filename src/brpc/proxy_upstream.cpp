@@ -54,6 +54,11 @@ void ProxyTunnel::WriteClient(butil::IOBuf* data, Done done) const {
     const int error = session && session->WriteClient(data) ? 0 : EIO;
     done(error);
 }
+bool ProxyTunnel::SetTrafficObserver(
+    std::shared_ptr<ProxyTrafficObserver> observer) const {
+    auto session = _impl->session.lock();
+    return session && session->SetConnectionTrafficObserver(std::move(observer));
+}
 void ProxyTunnel::Close() const {
     if (auto session = _impl->session.lock()) session->Close();
 }
@@ -189,9 +194,10 @@ void ProxyUpstream::Close() {
 
 namespace details {
 ParseResult MakeTunnelEnqueueError(const butil::Status& status) {
-    return MakeParseError(status.error_code() == ENOBUFS
-                              ? PARSE_ERROR_TOO_BIG_DATA
-                              : PARSE_ERROR_ABSOLUTELY_WRONG);
+    return status.error_code() == ENOBUFS
+        ? MakeParseError(PARSE_ERROR_NO_RESOURCE,
+                         "tunnel pending byte limit exceeded")
+        : MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
 }
 
 brpc::ProxyConnectResult AwaitProxyConnect(ProxyUpstream *upstream,

@@ -297,6 +297,7 @@ set(PROTO_FILES brpc/builtin_service.proto
                 brpc/streaming_rpc_meta.proto
                 brpc/trackme.proto
                 brpc/urma/urma_handshake.proto
+                brpc/http_proxy.proto
                 idl_options.proto)
 compile_proto(PROTO_HDRS PROTO_SRCS ${CMAKE_CURRENT_BINARY_DIR}
                                     ${CMAKE_CURRENT_SOURCE_DIR}/..

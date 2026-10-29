@@ -26,7 +26,7 @@
 namespace brpc {
 namespace details {
 // Parser adapters convert a failed enqueue Status into a brpc ParseResult.
-// ENOBUFS maps to TOO_BIG_DATA; closure maps to ABSOLUTELY_WRONG. Do not pass
+// ENOBUFS maps to NO_RESOURCE; closure maps to ABSOLUTELY_WRONG. Do not pass
 // Status error text into ParseResult: its description would outlive the Status.
 ParseResult MakeTunnelEnqueueError(const butil::Status& status);
 brpc::ProxyConnectResult AwaitProxyConnect(ProxyUpstream* upstream,

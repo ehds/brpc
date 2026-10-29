@@ -21,6 +21,7 @@
 
 #include <functional>
 #include <memory>
+#include <utility>
 #include "bthread/execution_queue.h"
 #include "bthread/mutex.h"
 #include "brpc/proxy_upstream.h"
@@ -61,6 +62,7 @@ struct TcpTunnel : std::enable_shared_from_this<TcpTunnel> {
     // Enable payload observation after a successful SOCKS/HTTP CONNECT reply.
     // Queued client data is observed when its upstream write runs.
     void EnableTrafficObserver(std::shared_ptr<ProxyTrafficObserver> observer);
+    bool SetConnectionTrafficObserver(std::shared_ptr<ProxyTrafficObserver> observer);
     bool WriteClient(butil::IOBuf* data);
     bool WriteUpstream(butil::IOBuf* data);
     bool ProcessUpstreamData(butil::IOBuf* data);
@@ -71,9 +73,12 @@ private:
     struct Task;
     static int Consume(void*, bthread::TaskIterator<std::shared_ptr<Task>>& tasks);
     butil::Status SubmitData(Socket* input, butil::IOBuf* source, bool from_upstream);
-    std::shared_ptr<ProxyTrafficObserver> TrafficObserver();
+    std::pair<std::shared_ptr<ProxyTrafficObserver>,
+              std::shared_ptr<ProxyTrafficObserver>> TrafficObservers();
     std::shared_ptr<ProxyUpstream> _upstream;
     std::shared_ptr<ProxyTrafficObserver> _traffic_observer;
+    std::shared_ptr<ProxyTrafficObserver> _connection_traffic_observer;
+    bool _traffic_enabled = false;
     bthread::ExecutionQueueId<std::shared_ptr<Task>> _queue = {};
     bool _queue_started = false;
 };
